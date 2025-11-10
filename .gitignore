@@ -1,0 +1,103 @@
+# Binaries
+gorpc/stash-compreface-rpc
+gorpc/stash-compreface-plugin
+gorpc/test-build-temp
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+*.out
+
+# Go build cache
+go.work
+go.work.sum
+
+# Environment variables
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# Python quality service
+face-quality-service/venv/
+face-quality-service/*.dat
+face-quality-service/models/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+tmp/
+temp/
+
+# Test data and samples
+tests/fixtures/images/
+tests/test-data/
+test-media/
+samples/
+
+# Coverage reports
+coverage.out
+coverage.html
+*.coverprofile
+
+# Session history and local settings
+session-history.txt
+.claude/
+.mailmap
+
+# Archive and old versions
+archive/
+
+# Build artifacts
+gorpc/.golangci.yml.bak
+gorpc/BUILD_ERRORS.md
+gorpc/CURRENT_STATUS.md
+gorpc/REFACTOR_STATUS.md
+gorpc/REFACTORING_*.md
+gorpc/*.sh
