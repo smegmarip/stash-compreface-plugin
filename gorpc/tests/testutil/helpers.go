@@ -27,7 +27,7 @@ func SetupTestEnv(t *testing.T) *TestEnv {
 		t:                 t,
 		StashURL:          getEnvOrDefault("STASH_URL", "http://localhost:9999"),
 		ComprefaceURL:     getEnvOrDefault("COMPREFACE_URL", "http://localhost:8000"),
-		VisionServiceURL:  getEnvOrDefault("VISION_SERVICE_URL", "http://localhost:5000"),
+		VisionServiceURL:  getEnvOrDefault("VISION_SERVICE_URL", "http://localhost:5010"),
 		QualityServiceURL: getEnvOrDefault("QUALITY_SERVICE_URL", "http://localhost:6001"),
 		RecognitionKey:    os.Getenv("COMPREFACE_RECOGNITION_KEY"),
 		DetectionKey:      os.Getenv("COMPREFACE_DETECTION_KEY"),
