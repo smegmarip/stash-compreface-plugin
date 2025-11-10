@@ -1,0 +1,58 @@
+run:
+  timeout: 5m
+  tests: true # Also lint test files
+
+linters:
+  enable:
+    - govet # Built-in Go static analysis (detects common bugs)
+    - staticcheck # High-quality static analysis
+    - gosimple # Simplifies idiomatic Go code
+    - revive # Modern style & convention linter
+    - ineffassign # Detects unused assignments
+    - errcheck # Detects unhandled errors
+    - gofmt # Enforces code formatting
+    - goimports # Formats + organizes imports
+    - unused # Finds unused vars, funcs, etc.
+    - typecheck # Ensures correct type usage
+
+  disable:
+    - funlen # Allow longer functions for now
+    - gocyclo # Skip complexity checks at the start
+    - depguard # Disable import restrictions (can enable later)
+
+linters-settings:
+  gofmt:
+    simplify: true
+
+  goimports:
+    local-prefixes: github.com/yourname/yourproject
+
+  revive:
+    ignore-generated-header: true
+    severity: warning
+    rules:
+      - name: exported
+      - name: package-comments
+      - name: var-naming
+      - name: receiver-naming
+      - name: indent-error-flow
+      - name: if-return
+      - name: argument-limit
+        arguments: [5] # Warn if function has too many params
+      - name: unnecessary-stmt
+      - name: early-return
+
+issues:
+  exclude-use-default: false
+  exclude:
+    - "Error return value of .((os|io).*) is not checked"
+  max-same-issues: 3
+  max-issues-per-linter: 0
+  max-issues-per-line: 0
+  new: true
+
+output:
+  formats:
+    - format: colored-line-number
+  print-issued-lines: true
+  sort-results: true

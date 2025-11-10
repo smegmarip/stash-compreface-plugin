@@ -1,0 +1,119 @@
+name: Compreface
+description: Face recognition and performer synchronization via Compreface
+version: 2.0.0
+url: https://github.com/smegmarip/stash-compreface-plugin
+exec:
+  - gorpc/stash-compreface-rpc
+interface: rpc
+
+settings:
+  comprefaceUrl:
+    displayName: Compreface Service URL
+    description: URL of the Compreface service (leave empty for auto-detection at http://compreface:8000)
+    type: STRING
+  recognitionApiKey:
+    displayName: Recognition API Key
+    description: Compreface recognition API key (required)
+    type: STRING
+  detectionApiKey:
+    displayName: Detection API Key
+    description: Compreface detection API key (required)
+    type: STRING
+  verificationApiKey:
+    displayName: Verification API Key
+    description: Compreface verification API key (optional)
+    type: STRING
+  cooldownSeconds:
+    displayName: Cooldown Period (seconds)
+    description: Delay between batches to prevent hardware overheating (default 10 seconds)
+    type: NUMBER
+  maxBatchSize:
+    displayName: Maximum Batch Size
+    description: Maximum items to process per batch (default 20, prevents hardware stress)
+    type: NUMBER
+  minSimilarity:
+    displayName: Minimum Similarity Threshold
+    description: Minimum face similarity score 0.0-1.0 (default 0.89)
+    type: NUMBER
+  minFaceSize:
+    displayName: Minimum Face Size
+    description: Minimum face dimensions in pixels (default 64)
+    type: NUMBER
+  scannedTagName:
+    displayName: Scanned Tag Name
+    description: Tag to mark scanned images (default "Compreface Scanned")
+    type: STRING
+  matchedTagName:
+    displayName: Matched Tag Name
+    description: Tag to mark matched images (default "Compreface Matched")
+    type: STRING
+  visionServiceUrl:
+    displayName: Vision Service URL
+    description: URL of the stash-auto-vision service for video face recognition (leave empty to disable, default http://stash-auto-vision:5000)
+    type: STRING
+  qualityServiceUrl:
+    displayName: Quality Service URL
+    description: URL of the stash-face-quality service for enhanced face quality assessment (leave empty to disable, default http://stash-face-quality:6001)
+    type: STRING
+
+tasks:
+  - name: Synchronize Performers
+    description: Synchronize existing performers with Compreface subjects
+    defaultArgs:
+      mode: synchronizePerformers
+
+  - name: Recognize Images (High Quality)
+    description: Detect and group faces in high-quality images
+    defaultArgs:
+      mode: recognizeImagesHQ
+
+  - name: Recognize Images (Low Quality)
+    description: Detect and group faces in low-quality images
+    defaultArgs:
+      mode: recognizeImagesLQ
+
+  - name: Identify All Images
+    description: Match faces in all images with existing performers
+    defaultArgs:
+      mode: identifyImagesAll
+
+  - name: Identify Unscanned Images
+    description: Match faces in new images with existing performers
+    defaultArgs:
+      mode: identifyImagesNew
+
+  - name: Reset Unmatched Images
+    description: Remove scan tags from unmatched images
+    defaultArgs:
+      mode: resetUnmatched
+
+  - name: Recognize Scenes
+    description: Extract and recognize faces from video scenes
+    defaultArgs:
+      mode: recognizeScenes
+
+  - name: Recognize Scene Sprites
+    description: Extract and recognize faces from scene sprite sheets
+    defaultArgs:
+      mode: recognizeSceneSprites
+
+  - name: Identify Single Image
+    description: Identify faces in a specific image
+    defaultArgs:
+      mode: identifyImage
+      imageId: null
+      createPerformer: false
+
+  - name: Create Performer from Image
+    description: Create new performer from detected face in image
+    defaultArgs:
+      mode: createPerformerFromImage
+      imageId: null
+      faceIndex: 0
+
+  - name: Identify Gallery
+    description: Identify faces in all images in a gallery
+    defaultArgs:
+      mode: identifyGallery
+      galleryId: null
+      createPerformer: false
