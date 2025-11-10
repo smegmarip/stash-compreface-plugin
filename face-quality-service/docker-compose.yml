@@ -1,0 +1,31 @@
+version: "3.8"
+
+services:
+  stash-face-quality:
+    build: .
+    image: stash-face-quality:latest
+    container_name: stash-face-quality
+    ports:
+      - "${WEB_SERVICE_PORT:-6001}:${INTERNAL_PORT:-6001}"
+    volumes:
+      # Mount dlib model files from parent directory
+      - ./shape_predictor_68_face_landmarks.dat:/app/shape_predictor_68_face_landmarks.dat:ro
+      - ./dlib_face_recognition_resnet_model_v1.dat:/app/dlib_face_recognition_resnet_model_v1.dat:ro
+    environment:
+      - QUALITY_SERVICE_PORT=${INTERNAL_PORT:-6001}
+      - QUALITY_SERVICE_TEMP=${QUALITY_SERVICE_TEMP:-/tmp/stash_compreface}
+    networks:
+      - stash-compreface
+    restart: unless-stopped
+    healthcheck:
+      test:
+        ["CMD", "curl", "-f", "http://localhost:${INTERNAL_PORT:-6001}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  stash-compreface:
+    name: ${DOCKER_NETWORK:-stash-compreface}
+    external: true
