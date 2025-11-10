@@ -1,0 +1,9 @@
+# Compiled binary
+stash-compreface-rpc
+
+# Go build cache
+*.test
+*.out
+
+# Dependency directories
+vendor/

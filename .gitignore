@@ -76,9 +76,6 @@ tmp/
 temp/
 
 # Test data and samples
-tests/fixtures/images/
-tests/test-data/
-test-media/
 samples/
 
 # Coverage reports
