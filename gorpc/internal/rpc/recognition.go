@@ -1,8 +1,6 @@
 package rpc
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 
 	graphql "github.com/hasura/go-graphql-client"
@@ -14,7 +12,7 @@ import (
 )
 
 // recognizeImages performs batch face recognition on images
-func (s *Service) recognizeImages(lowQuality bool) error {
+func (s *Service) recognizeImages(lowQuality bool, limit int) error {
 	if s.stopping {
 		return fmt.Errorf("operation cancelled")
 	}
@@ -31,6 +29,14 @@ func (s *Service) recognizeImages(lowQuality bool) error {
 		return fmt.Errorf("failed to get scanned tag: %w", err)
 	}
 
+	completeTagName := s.config.CompleteTagName
+
+	// Get completion tag ID for filtering (exclude already-complete images)
+	completeTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, completeTagName, "Compreface Complete")
+	if err != nil {
+		return fmt.Errorf("failed to get complete tag: %w", err)
+	}
+
 	batchSize := s.config.MaxBatchSize
 	page := 0
 	total := 0
@@ -45,50 +51,32 @@ func (s *Service) recognizeImages(lowQuality bool) error {
 
 		page++
 
-		// Fetch unscanned images
-		ctx := context.Background()
-		query := fmt.Sprintf(`query {
-			findImages(
-				image_filter: {
-					tags: {
-						value: ["%s"],
-						modifier: EXCLUDES
-					}
-				},
-				filter: {per_page: %d, page: %d}
-			) {
-				count
-				images {
-					id
-				}
-			}
-		}`, scannedTagID, batchSize, page)
-
-		data, err := s.graphqlClient.ExecRaw(ctx, query, nil)
+		// Fetch unscanned images (excluding scanned AND complete)
+		// Only images without scanned tag
+		tagsFilter := stash.HierarchicalMultiCriterionInput{
+			Value:    []string{string(scannedTagID), string(completeTagID)},
+			Modifier: stash.CriterionModifierExcludes,
+		}
+		filter := &stash.ImageFilterType{
+			Tags: &tagsFilter,
+		}
+		images, count, err := stash.FindImages(s.graphqlClient, filter, page, batchSize)
 		if err != nil {
 			return fmt.Errorf("failed to query images: %w", err)
 		}
 
-		// Parse response
-		var response struct {
-			FindImages struct {
-				Count  int `json:"count"`
-				Images []struct {
-					ID graphql.ID `json:"id"`
-				} `json:"images"`
-			} `json:"findImages"`
-		}
-
-		if err := json.Unmarshal(data, &response); err != nil {
-			return fmt.Errorf("failed to parse query response: %w", err)
-		}
-
 		if page == 1 {
-			total = response.FindImages.Count
-			log.Infof("Found %d images to process", total)
+			total = count
+
+			// Apply limit if specified
+			if limit > 0 && limit < total {
+				total = limit
+				log.Infof("Found %d images, limiting to %d", count, limit)
+			} else {
+				log.Infof("Found %d images to process", total)
+			}
 		}
 
-		images := response.FindImages.Images
 		if len(images) == 0 {
 			break
 		}
@@ -99,6 +87,12 @@ func (s *Service) recognizeImages(lowQuality bool) error {
 		for _, image := range images {
 			if s.stopping {
 				return fmt.Errorf("operation cancelled")
+			}
+
+			// Check if limit reached
+			if limit > 0 && processedCount >= limit {
+				log.Infof("Reached limit of %d images, stopping", limit)
+				break
 			}
 
 			processedCount++
@@ -116,6 +110,11 @@ func (s *Service) recognizeImages(lowQuality bool) error {
 			}
 		}
 
+		// Break outer loop if limit reached
+		if limit > 0 && processedCount >= limit {
+			break
+		}
+
 		// Apply cooldown after processing batch
 		if len(images) == batchSize && processedCount < total {
 			s.applyCooldown()
@@ -129,6 +128,7 @@ func (s *Service) recognizeImages(lowQuality bool) error {
 }
 
 // recognizeImageFaces detects and recognizes faces in an image, creating subjects as needed
+// TODO: Implement lowQuality parameter handling
 func (s *Service) recognizeImageFaces(imageID string, lowQuality bool) error {
 	// Step 1: Get image from Stash
 	image, err := stash.GetImage(s.graphqlClient, graphql.ID(imageID))
@@ -205,7 +205,38 @@ func (s *Service) recognizeImageFaces(imageID string, lowQuality bool) error {
 			log.Infof("Created subject '%s' (image_id: %s)", addResp.Subject, addResp.ImageID)
 			createdSubjects++
 
-			// TODO: Create performer in Stash and link to subject
+			// Construct Compreface image URL
+			imageURL := s.comprefaceClient.SubjectImageURL(addResp.ImageID)
+			log.Debugf("Compreface face image URL: %s", imageURL)
+
+			// Create performer in Stash and link to subject
+			performerSubject := stash.PerformerSubject{
+				Name:  subjectName,
+				Age:   int((result.Age.High + result.Age.Low) / 2),
+				Image: imageURL,
+			}
+			stashGender, err := stash.ParseGenderEnum(result.Gender.Value)
+			if err == nil {
+				performerSubject.Gender = string(stashGender)
+			}
+			performerID, err := stash.CreatePerformerWithImage(s.graphqlClient, performerSubject)
+			if err != nil {
+				log.Warnf("Failed to create performer for subject '%s': %v", subjectName, err)
+				continue
+			}
+
+			// Link performer to image
+			performerIDS := []string{string(performerID)}
+			input := &stash.ImageUpdateInput{
+				ID:           imageID,
+				PerformerIds: performerIDS,
+			}
+			err = stash.UpdateImage(s.graphqlClient, graphql.ID(imageID), *input)
+			if err != nil {
+				log.Warnf("Failed to link performer %s to image %s: %v", performerID, imageID, err)
+			} else {
+				log.Debugf("Created and linked performer '%s' (ID: %s) to image", subjectName, performerID)
+			}
 		}
 	}
 

@@ -1,9 +1,18 @@
 package rpc
 
 import (
-	"context"
-	"encoding/json"
+	"bytes"
+	"encoding/base64"
 	"fmt"
+	"image"
+	_ "image/gif" // Register GIF format
+	"image/jpeg"
+	_ "image/png" // Register PNG format
+	"os"
+	"strings"
+
+	_ "golang.org/x/image/bmp"  // Register BMP format
+	_ "golang.org/x/image/webp" // Register WEBP format
 
 	graphql "github.com/hasura/go-graphql-client"
 	"github.com/stashapp/stash/pkg/plugin/common/log"
@@ -18,30 +27,42 @@ import (
 // ============================================================================
 
 // identifyImage identifies faces in a single image and optionally creates performers
-func (s *Service) identifyImage(imageID string, createPerformer bool, faceIndex *int) error {
+func (s *Service) identifyImage(imageID string, createPerformer bool, faceIndex *int) (*[]FaceIdentity, error) {
 	if s.stopping {
-		return fmt.Errorf("operation cancelled")
+		return nil, fmt.Errorf("operation cancelled")
 	}
 
 	// Step 1: Get image from Stash
 	log.Infof("Fetching image: %s", imageID)
 	image, err := stash.GetImage(s.graphqlClient, graphql.ID(imageID))
 	if err != nil {
-		return fmt.Errorf("failed to get image: %w", err)
+		return nil, fmt.Errorf("failed to get image: %w", err)
 	}
 
 	if len(image.Files) == 0 {
-		return fmt.Errorf("image %s has no files", imageID)
+		return nil, fmt.Errorf("image %s has no files", imageID)
 	}
-
 	imagePath := image.Files[0].Path
 	log.Debugf("Image path: %s", imagePath)
 
 	// Step 2: Recognize faces using Compreface
 	log.Infof("Recognizing faces in image: %s", imagePath)
 	recognitionResp, err := s.comprefaceClient.RecognizeFaces(imagePath)
+	identities := &[]FaceIdentity{}
 	if err != nil {
-		return fmt.Errorf("failed to recognize faces: %w", err)
+		// Check if error is "No face is found" (code 28)
+		if strings.Contains(err.Error(), "No face is found") || strings.Contains(err.Error(), "code\" : 28") {
+			log.Infof("No faces detected in image %s", imageID)
+			// Still add scanned tag
+			scannedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.ScannedTagName, "Compreface Scanned")
+			if err == nil {
+				stash.AddTagToImage(s.graphqlClient, graphql.ID(imageID), scannedTagID)
+			}
+			// Mark as complete (no faces to match)
+			s.updateImageCompletionStatus(graphql.ID(imageID), 0, 0)
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to recognize faces: %w", err)
 	}
 
 	if len(recognitionResp.Result) == 0 {
@@ -51,7 +72,9 @@ func (s *Service) identifyImage(imageID string, createPerformer bool, faceIndex 
 		if err == nil {
 			stash.AddTagToImage(s.graphqlClient, graphql.ID(imageID), scannedTagID)
 		}
-		return nil
+		// Mark as complete (no faces to match)
+		s.updateImageCompletionStatus(graphql.ID(imageID), 0, 0)
+		return nil, nil
 	}
 
 	log.Infof("Found %d face(s) in image %s", len(recognitionResp.Result), imageID)
@@ -60,7 +83,7 @@ func (s *Service) identifyImage(imageID string, createPerformer bool, faceIndex 
 	facesToProcess := recognitionResp.Result
 	if faceIndex != nil {
 		if *faceIndex >= len(facesToProcess) {
-			return fmt.Errorf("face index %d out of range (detected %d faces)", *faceIndex, len(facesToProcess))
+			return nil, fmt.Errorf("face index %d out of range (detected %d faces)", *faceIndex, len(facesToProcess))
 		}
 		facesToProcess = []compreface.RecognitionResult{facesToProcess[*faceIndex]}
 		log.Infof("Processing only face index %d", *faceIndex)
@@ -72,41 +95,123 @@ func (s *Service) identifyImage(imageID string, createPerformer bool, faceIndex 
 	for i, result := range facesToProcess {
 		log.Debugf("Processing face %d/%d", i+1, len(facesToProcess))
 
-		if len(result.Subjects) == 0 {
-			log.Debugf("Face %d: No subjects matched", i)
-			if createPerformer {
-				log.Infof("Creating new performer for unmatched face %d", i)
-				// TODO: Implement performer creation
+		// Check if we have a match above threshold
+		// Note: Compreface ALWAYS returns results even for low similarities
+		// We must check the similarity score to determine if it's a valid match
+		var matchedSubject string
+		var matchedSimilarity float64
+
+		if len(result.Subjects) > 0 {
+			bestMatch := result.Subjects[0]
+			matchedSimilarity = bestMatch.Similarity
+
+			// Only consider it a match if similarity is above threshold
+			if bestMatch.Similarity >= s.config.MinSimilarity {
+				matchedSubject = bestMatch.Subject
+				log.Infof("Face %d: Matched subject '%s' with similarity %.2f",
+					i, matchedSubject, matchedSimilarity)
+			} else {
+				log.Debugf("Face %d: Best match '%s' below threshold (%.2f < %.2f)",
+					i, bestMatch.Subject, bestMatch.Similarity, s.config.MinSimilarity)
 			}
-			continue
+		} else {
+			log.Debugf("Face %d: No subjects returned from Compreface", i)
 		}
 
-		// Find best match above similarity threshold
-		bestMatch := result.Subjects[0]
-		if bestMatch.Similarity < s.config.MinSimilarity {
-			log.Debugf("Face %d: Best match '%s' below threshold (%.2f < %.2f)",
-				i, bestMatch.Subject, bestMatch.Similarity, s.config.MinSimilarity)
-			if createPerformer {
-				log.Infof("Creating new performer for low-similarity face %d", i)
-				// TODO: Implement performer creation
-			}
-			continue
+		// Initialize performer identity record
+		performer := PerformerData{
+			Age:    int((result.Age.Low + result.Age.High) / 2),
+			Gender: result.Gender.Value,
 		}
 
-		log.Infof("Face %d: Matched subject '%s' with similarity %.2f",
-			i, bestMatch.Subject, bestMatch.Similarity)
-
-		// Find performer by subject name/alias
-		performerID, err := stash.FindPerformerBySubjectName(s.graphqlClient, bestMatch.Subject)
+		// Extract base64 face image for identity record
+		imageBase64Str, err := s.extractBase64FaceImage(imagePath, result.Box, 20)
 		if err != nil {
-			log.Warnf("Failed to find performer for subject '%s': %v", bestMatch.Subject, err)
+			imageBase64Str = nil
+			log.Warnf("Failed to extract base64 face image for face %d: %v", i, err)
+		}
+
+		// Calculate confidence as percentage
+		confidence := matchedSimilarity * 100
+
+		// If no match above threshold and createPerformer is true, create new subject/performer
+		if matchedSubject == "" {
+			// Generate subject name
+			subjectName := compreface.CreateSubjectName(imageID)
+			performer.Name = subjectName
+			if createPerformer {
+				log.Infof("Creating new performer for face %d (no match above threshold)", i)
+
+				// Add subject to Compreface with the full image
+				log.Debugf("Adding subject '%s' to Compreface", subjectName)
+				addResp, err := s.comprefaceClient.AddSubject(subjectName, imagePath)
+				if err != nil {
+					log.Warnf("Failed to add subject for face %d: %v", i, err)
+					continue
+				}
+				log.Infof("Created Compreface subject '%s' (image_id: %s)", addResp.Subject, addResp.ImageID)
+
+				// Construct Compreface image URL
+				imageURL := s.comprefaceClient.SubjectImageURL(addResp.ImageID)
+				log.Debugf("Compreface face image URL: %s", imageURL)
+
+				// Create performer in Stash with face image from Compreface
+				performerSubject := stash.PerformerSubject{
+					Name:    subjectName,
+					Aliases: []string{subjectName},
+					Age:     performer.Age,
+					Image:   imageURL,
+					Gender:  performer.Gender,
+				}
+
+				performerID, err := stash.CreatePerformerWithImage(s.graphqlClient, performerSubject)
+				performerIDStr := string(performerID)
+				performer.ID = &performerIDStr
+				if err != nil {
+					log.Warnf("Failed to create performer for subject '%s': %v", subjectName, err)
+					continue
+				}
+
+				performerIDs = append(performerIDs, performerID)
+				foundMatch = true
+				log.Infof("Created performer %s for face %d", performerID, i)
+			}
+			identity := FaceIdentity{
+				ImageID:    imageID,
+				Performer:  performer,
+				Image:      imageBase64Str,
+				Confidence: &confidence,
+			}
+			*identities = append(*identities, identity)
 			continue
 		}
 
-		if performerID != "" {
-			performerIDs = append(performerIDs, performerID)
-			foundMatch = true
-			log.Infof("Face %d: Associated with performer %s", i, performerID)
+		// If we have a matched subject above threshold, find the performer
+		if matchedSubject != "" {
+			// Find performer by subject name/alias
+			performerID, err := stash.FindPerformerBySubjectName(s.graphqlClient, matchedSubject)
+			if err != nil {
+				log.Warnf("Failed to find performer for subject '%s': %v", matchedSubject, err)
+				continue
+			}
+
+			if performerID != "" {
+				performerIDs = append(performerIDs, performerID)
+				foundMatch = true
+				log.Infof("Face %d: Associated with performer %s", i, performerID)
+				performerIDStr := string(performerID)
+				performer.ID = &performerIDStr
+				performer.Name = matchedSubject
+				identity := FaceIdentity{
+					ImageID:    imageID,
+					Performer:  performer,
+					Image:      imageBase64Str,
+					Confidence: &confidence,
+				}
+				*identities = append(*identities, identity)
+			} else {
+				log.Warnf("Face %d: Subject '%s' exists in Compreface but no matching performer found in Stash", i, matchedSubject)
+			}
 		}
 	}
 
@@ -124,7 +229,18 @@ func (s *Service) identifyImage(imageID string, createPerformer bool, faceIndex 
 		allPerformerIDs := append(existingPerformerIDs, performerIDs...)
 		allPerformerIDs = utils.DeduplicateIDs(allPerformerIDs)
 
-		err = stash.UpdateImage(s.graphqlClient, graphql.ID(imageID), nil, allPerformerIDs)
+		var performerIDStrs []string = make([]string, len(allPerformerIDs))
+		for i, id := range allPerformerIDs {
+			performerIDStrs[i] = string(id)
+		}
+
+		input := stash.ImageUpdateInput{
+			ID: string(imageID),
+		}
+		if len(performerIDs) > 0 {
+			input.PerformerIds = performerIDStrs
+		}
+		err = stash.UpdateImage(s.graphqlClient, graphql.ID(imageID), input)
 		if err != nil {
 			log.Warnf("Failed to update image performers: %v", err)
 		}
@@ -144,73 +260,81 @@ func (s *Service) identifyImage(imageID string, createPerformer bool, faceIndex 
 		}
 	}
 
+	// Step 7: Update completion status
+	facesDetected := len(recognitionResp.Result)
+	facesMatched := len(performerIDs)
+	err = s.updateImageCompletionStatus(graphql.ID(imageID), facesDetected, facesMatched)
+	if err != nil {
+		log.Warnf("Failed to update completion status: %v", err)
+	}
+
 	log.Infof("Successfully processed image %s (%d performer(s) matched)", imageID, len(performerIDs))
-	return nil
+	return identities, nil
 }
 
 // identifyGallery processes all images in a gallery
-func (s *Service) identifyGallery(galleryID string, createPerformer bool) error {
+func (s *Service) identifyGallery(galleryID string, createPerformer bool, limit int) error {
 	if s.stopping {
 		return fmt.Errorf("operation cancelled")
 	}
 
-	log.Infof("Starting gallery identification: %s (createPerformer=%v)", galleryID, createPerformer)
+	log.Infof("Starting gallery identification: %s (createPerformer=%v, limit=%d)", galleryID, createPerformer, limit)
 
-	// Step 1: Get gallery and its images
-	ctx := context.Background()
-	query := fmt.Sprintf(`query {
-		findGallery(id: "%s") {
-			id
-			title
-			images {
-				id
-			}
-		}
-	}`, galleryID)
-
-	data, err := s.graphqlClient.ExecRaw(ctx, query, nil)
+	// Step 1: Get gallery info first
+	gallery, err := stash.GetGallery(s.graphqlClient, graphql.ID(galleryID))
 	if err != nil {
-		return fmt.Errorf("failed to query gallery: %w", err)
+		return fmt.Errorf("failed to get gallery: %w", err)
 	}
 
-	// Parse response
-	var response struct {
-		FindGallery struct {
-			ID     graphql.ID `json:"id"`
-			Title  string     `json:"title"`
-			Images []struct {
-				ID graphql.ID `json:"id"`
-			} `json:"images"`
-		} `json:"findGallery"`
-	}
-
-	if err := json.Unmarshal(data, &response); err != nil {
-		return fmt.Errorf("failed to parse query response: %w", err)
-	}
-
-	gallery := response.FindGallery
-	if len(gallery.Images) == 0 {
+	if gallery.ImageCount == 0 {
 		log.Infof("Gallery %s has no images", galleryID)
 		return nil
 	}
 
-	log.Infof("Gallery '%s' has %d images", gallery.Title, len(gallery.Images))
+	page := 1
+	totalImages := gallery.ImageCount
+	if limit > 0 && limit < totalImages {
+		totalImages = limit
+	}
 
-	// Step 2: Process each image in the gallery
+	log.Infof("Gallery '%s' has %d images (will process %d)", gallery.Title, gallery.ImageCount, totalImages)
+
+	// Step 2: Query images in gallery using findImages with gallery filter
+	// Only images without scanned tag
+	galleryFilter := stash.MultiCriterionInput{
+		Value:    []string{string(galleryID)},
+		Modifier: stash.CriterionModifierIncludes,
+	}
+	filter := &stash.ImageFilterType{
+		Galleries: &galleryFilter,
+	}
+	images, _, err := stash.FindImages(s.graphqlClient, filter, page, totalImages)
+	if err != nil {
+		return fmt.Errorf("failed to query gallery images: %w", err)
+	}
+
+	if len(images) == 0 {
+		log.Infof("Gallery %s has no images to process", galleryID)
+		return nil
+	}
+
+	log.Infof("Processing %d images from gallery '%s'", len(images), gallery.Title)
+
+	// Step 3: Process each image in the gallery
 	successCount := 0
 	failureCount := 0
 
-	for i, image := range gallery.Images {
+	for i, image := range images {
 		if s.stopping {
 			return fmt.Errorf("operation cancelled")
 		}
 
-		progress := float64(i+1) / float64(len(gallery.Images))
+		progress := float64(i+1) / float64(len(images))
 		log.Progress(progress)
 
-		log.Infof("Processing image %d/%d: %s", i+1, len(gallery.Images), image.ID)
+		log.Infof("Processing image %d/%d: %s", i+1, len(images), image.ID)
 
-		err := s.identifyImage(string(image.ID), createPerformer, nil)
+		_, err := s.identifyImage(string(image.ID), createPerformer, nil)
 		if err != nil {
 			log.Warnf("Failed to identify image %s: %v", image.ID, err)
 			failureCount++
@@ -226,7 +350,7 @@ func (s *Service) identifyGallery(galleryID string, createPerformer bool) error 
 }
 
 // identifyImages performs batch identification of images
-func (s *Service) identifyImages(newOnly bool) error {
+func (s *Service) identifyImages(newOnly bool, limit int) error {
 	if s.stopping {
 		return fmt.Errorf("operation cancelled")
 	}
@@ -235,7 +359,7 @@ func (s *Service) identifyImages(newOnly bool) error {
 	if newOnly {
 		mode = "unscanned images only"
 	}
-	log.Infof("Starting batch image identification (%s)", mode)
+	log.Infof("Starting batch image identification (%s, limit=%d)", mode, limit)
 
 	// Get scanned tag ID for filtering
 	scannedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.ScannedTagName, "Compreface Scanned")
@@ -258,66 +382,35 @@ func (s *Service) identifyImages(newOnly bool) error {
 		page++
 
 		// Build query based on mode
-		var query string
-		ctx := context.Background()
-
+		var filter *stash.ImageFilterType
 		if newOnly {
 			// Only images without scanned tag
-			query = fmt.Sprintf(`query {
-				findImages(
-					image_filter: {
-						tags: {
-							value: ["%s"],
-							modifier: EXCLUDES
-						}
-					},
-					filter: {per_page: %d, page: %d}
-				) {
-					count
-					images {
-						id
-					}
-				}
-			}`, scannedTagID, batchSize, page)
-		} else {
-			// All images
-			query = fmt.Sprintf(`query {
-				findImages(
-					filter: {per_page: %d, page: %d}
-				) {
-					count
-					images {
-						id
-					}
-				}
-			}`, batchSize, page)
+			tagsFilter := stash.HierarchicalMultiCriterionInput{
+				Value:    []string{string(scannedTagID)},
+				Modifier: stash.CriterionModifierExcludes,
+			}
+			filter = &stash.ImageFilterType{
+				Tags: &tagsFilter,
+			}
 		}
 
-		data, err := s.graphqlClient.ExecRaw(ctx, query, nil)
+		images, count, err := stash.FindImages(s.graphqlClient, filter, page, batchSize)
 		if err != nil {
 			return fmt.Errorf("failed to query images: %w", err)
 		}
 
-		// Parse response
-		var response struct {
-			FindImages struct {
-				Count  int `json:"count"`
-				Images []struct {
-					ID graphql.ID `json:"id"`
-				} `json:"images"`
-			} `json:"findImages"`
-		}
-
-		if err := json.Unmarshal(data, &response); err != nil {
-			return fmt.Errorf("failed to parse query response: %w", err)
-		}
-
 		if page == 1 {
-			total = response.FindImages.Count
-			log.Infof("Found %d images to process", total)
+			total = count
+
+			// Apply limit if specified
+			if limit > 0 && limit < total {
+				total = limit
+				log.Infof("Found %d images, limiting to %d", count, limit)
+			} else {
+				log.Infof("Found %d images to process", total)
+			}
 		}
 
-		images := response.FindImages.Images
 		if len(images) == 0 {
 			break
 		}
@@ -330,19 +423,30 @@ func (s *Service) identifyImages(newOnly bool) error {
 				return fmt.Errorf("operation cancelled")
 			}
 
+			// Check if limit reached
+			if limit > 0 && processedCount >= limit {
+				log.Infof("Reached limit of %d images, stopping", limit)
+				break
+			}
+
 			processedCount++
 			progress := float64(processedCount) / float64(total)
 			log.Progress(progress)
 
 			log.Infof("Processing image %d/%d: %s", processedCount, total, image.ID)
 
-			err := s.identifyImage(string(image.ID), false, nil)
+			_, err := s.identifyImage(string(image.ID), false, nil)
 			if err != nil {
 				log.Warnf("Failed to identify image %s: %v", image.ID, err)
 				failureCount++
 			} else {
 				successCount++
 			}
+		}
+
+		// Break outer loop if limit reached
+		if limit > 0 && processedCount >= limit {
+			break
 		}
 
 		// Apply cooldown after processing batch
@@ -358,10 +462,12 @@ func (s *Service) identifyImages(newOnly bool) error {
 }
 
 // resetUnmatchedImages removes scanned tags from unmatched images
-func (s *Service) resetUnmatchedImages() error {
+func (s *Service) resetUnmatchedImages(limit int) error {
 	if s.stopping {
 		return fmt.Errorf("operation cancelled")
 	}
+
+	log.Infof("Starting reset of unmatched images (limit=%d)", limit)
 
 	// Step 1: Get tag IDs
 	scannedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.ScannedTagName, "Compreface Scanned")
@@ -374,86 +480,53 @@ func (s *Service) resetUnmatchedImages() error {
 		return fmt.Errorf("failed to get matched tag: %w", err)
 	}
 
+	var perPage int = -1
+	if limit > 0 {
+		perPage = limit
+	}
+
 	log.Infof("Searching for unmatched images (scanned but not matched)")
 
 	// Step 2: Find images with scanned tag but no matched tag
-	// We'll use GraphQL directly since we need tag filtering
-	ctx := context.Background()
-	query := fmt.Sprintf(`query {
-		findImages(
-			image_filter: {
-				tags: {
-					value: ["%s"],
-					modifier: INCLUDES_ALL
-				}
-			},
-			filter: {per_page: -1}
-		) {
-			count
-			images {
-				id
-				tags {
-					id
-				}
-			}
-		}
-	}`, scannedTagID)
-
-	data, err := s.graphqlClient.ExecRaw(ctx, query, nil)
+	tagFilter := stash.HierarchicalMultiCriterionInput{
+		Value:    []string{string(scannedTagID)},
+		Modifier: stash.CriterionModifierIncludesAll,
+		Excludes: []string{string(matchedTagID)},
+	}
+	input := stash.ImageFilterType{
+		Tags: &tagFilter,
+	}
+	images, count, err := stash.FindImages(s.graphqlClient, &input, 1, perPage)
 	if err != nil {
 		return fmt.Errorf("failed to query images: %w", err)
 	}
 
-	// Parse response
-	var response struct {
-		FindImages struct {
-			Count  int `json:"count"`
-			Images []struct {
-				ID   graphql.ID `json:"id"`
-				Tags []struct {
-					ID graphql.ID `json:"id"`
-				} `json:"tags"`
-			} `json:"images"`
-		} `json:"findImages"`
-	}
+	log.Infof("Found %d scanned, unmatched images", count)
 
-	if err := json.Unmarshal(data, &response); err != nil {
-		return fmt.Errorf("failed to parse query response: %w", err)
-	}
-
-	log.Infof("Found %d scanned images", response.FindImages.Count)
-
-	// Step 3: Filter for images without matched tag
-	var unmatchedImages []graphql.ID
-	for _, image := range response.FindImages.Images {
-		hasMatchedTag := false
-		for _, tag := range image.Tags {
-			if tag.ID == matchedTagID {
-				hasMatchedTag = true
-				break
-			}
-		}
-
-		if !hasMatchedTag {
-			unmatchedImages = append(unmatchedImages, image.ID)
-		}
-	}
-
-	if len(unmatchedImages) == 0 {
+	if len(images) == 0 {
 		log.Info("No unmatched images found")
 		return nil
 	}
 
-	log.Infof("Found %d unmatched images to reset", len(unmatchedImages))
+	total := len(images)
+
+	// Apply limit if specified
+	if perPage > 0 && perPage < total {
+		log.Infof("Found %d unmatched images out of %d", total, count)
+	} else {
+		log.Infof("Found %d unmatched images to reset", total)
+	}
 
 	// Step 4: Remove scanned tag from unmatched images
 	resetCount := 0
-	for i, imageID := range unmatchedImages {
+	for i, image := range images {
 		if s.stopping {
 			return fmt.Errorf("operation cancelled")
 		}
 
-		progress := float64(i) / float64(len(unmatchedImages))
+		imageID := image.ID
+
+		progress := float64(i) / float64(len(images))
 		log.Progress(progress)
 
 		err := stash.RemoveTagFromImage(s.graphqlClient, imageID, scannedTagID)
@@ -463,11 +536,122 @@ func (s *Service) resetUnmatchedImages() error {
 		}
 
 		resetCount++
-		log.Debugf("Reset image %s (%d/%d)", imageID, i+1, len(unmatchedImages))
+		log.Debugf("Reset image %s (%d/%d)", imageID, i+1, len(images))
 	}
 
 	log.Progress(1.0)
 	log.Infof("Reset complete: %d images processed", resetCount)
 
 	return nil
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+// updateImageCompletionStatus updates the completion status tag for an image
+// based on how many faces were detected vs matched
+func (s *Service) updateImageCompletionStatus(imageID graphql.ID, facesDetected int, facesMatched int) error {
+	var completionTag string
+	var removeTag string
+
+	// Determine completion status
+	if facesDetected == 0 {
+		// No faces detected - mark as complete (nothing more to match)
+		completionTag = s.config.CompleteTagName
+		removeTag = s.config.PartialTagName
+	} else if facesMatched == facesDetected {
+		// All faces matched - complete
+		completionTag = s.config.CompleteTagName
+		removeTag = s.config.PartialTagName
+		log.Infof("Image %s: All %d face(s) matched - marking as Complete", imageID, facesDetected)
+	} else {
+		// Some faces unmatched - partial (may match in future with new subjects)
+		completionTag = s.config.PartialTagName
+		removeTag = s.config.CompleteTagName
+		log.Infof("Image %s: %d/%d face(s) matched - marking as Partial", imageID, facesMatched, facesDetected)
+	}
+
+	// Remove the opposite status tag if it exists
+	removeTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, removeTag, removeTag)
+	if err == nil {
+		// Try to remove, but don't fail if it doesn't exist
+		stash.RemoveTagFromImage(s.graphqlClient, imageID, removeTagID)
+	}
+
+	// Add the appropriate completion tag
+	completionTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, completionTag, completionTag)
+	if err != nil {
+		return fmt.Errorf("failed to get/create completion tag: %w", err)
+	}
+
+	err = stash.AddTagToImage(s.graphqlClient, imageID, completionTagID)
+	if err != nil {
+		return fmt.Errorf("failed to add completion tag: %w", err)
+	}
+
+	log.Debugf("Updated image %s with completion status: %s", imageID, completionTag)
+	return nil
+}
+
+// convertToJPEG opens an image from disk and ensures it’s in JPEG format.
+func (s *Service) convertToJPEG(imagePath string) (image.Image, error) {
+	file, err := os.Open(imagePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	img, _, err := image.Decode(file)
+	if err != nil {
+		return nil, err
+	}
+
+	return img, nil
+}
+
+// extractBoxImage crops a region from the image with optional padding.
+func (s *Service) extractBoxImage(img image.Image, box compreface.BoundingBox, padding int) (image.Image, error) {
+	bounds := img.Bounds()
+
+	xMin := utils.Max(bounds.Min.X, box.XMin-padding)
+	yMin := utils.Max(bounds.Min.Y, box.YMin-padding)
+	xMax := utils.Min(bounds.Max.X, box.XMax+padding)
+	yMax := utils.Min(bounds.Max.Y, box.YMax+padding)
+
+	rect := image.Rect(xMin, yMin, xMax, yMax)
+	cropped := img.(interface {
+		SubImage(r image.Rectangle) image.Image
+	}).SubImage(rect)
+
+	return cropped, nil
+}
+
+// imageToBase64 encodes the image to JPEG and Base64.
+func (s *Service) convertImageToBase64(img image.Image) (string, error) {
+	buf := new(bytes.Buffer)
+	if err := jpeg.Encode(buf, img, &jpeg.Options{Quality: 90}); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
+}
+
+// extractBase64FaceImage extracts a face image from the given image path and bounding box,
+func (s *Service) extractBase64FaceImage(imagePath string, box compreface.BoundingBox, padding int) (*string, error) {
+	img, err := s.convertToJPEG(imagePath)
+	if err != nil {
+		return nil, err
+	}
+
+	cropped, err := s.extractBoxImage(img, box, padding)
+	if err != nil {
+		return nil, err
+	}
+
+	base64Str, err := s.convertImageToBase64(cropped)
+	if err != nil {
+		return nil, err
+	}
+
+	return &base64Str, nil
 }
