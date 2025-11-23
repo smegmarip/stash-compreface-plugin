@@ -1,9 +1,11 @@
 package rpc
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
+	"image"
+	"image/jpeg"
 
 	graphql "github.com/hasura/go-graphql-client"
 	"github.com/stashapp/stash/pkg/plugin/common/log"
@@ -14,7 +16,7 @@ import (
 )
 
 // recognizeScenes performs face recognition on scenes using Vision Service
-func (s *Service) recognizeScenes(useSprites bool) error {
+func (s *Service) recognizeScenes(useSprites bool, scanPartial bool, limit int) error {
 	// Check if Vision Service is configured
 	if s.config.VisionServiceURL == "" {
 		return fmt.Errorf("vision service URL not configured")
@@ -25,13 +27,16 @@ func (s *Service) recognizeScenes(useSprites bool) error {
 
 	// Health check
 	if err := visionClient.HealthCheck(); err != nil {
+		log.Errorf("Health check failed: %v", err)
 		return fmt.Errorf("vision service health check failed: %w", err)
 	}
 
-	log.Info("Vision Service is healthy, starting scene recognition")
+	filterTagName := s.config.ScannedTagName
+
+	log.Debugf("Starting scene recognition (useSprites=%t, scanPartial=%t, limit=%d)", useSprites, scanPartial, limit)
 
 	// Get or create tags
-	scannedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.ScannedTagName, "Compreface Scanned")
+	scannedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, filterTagName, "Compreface Scanned")
 	if err != nil {
 		return fmt.Errorf("failed to get scanned tag: %w", err)
 	}
@@ -44,6 +49,8 @@ func (s *Service) recognizeScenes(useSprites bool) error {
 	// Fetch scenes in batches
 	page := 0
 	batchSize := s.config.MaxBatchSize
+	processedCount := 0
+	total := 0
 
 	for {
 		if s.stopping {
@@ -53,27 +60,53 @@ func (s *Service) recognizeScenes(useSprites bool) error {
 		page++
 
 		// Query scenes
-		scenes, total, err := findScenes(s.graphqlClient, page, batchSize)
+		var scenes []stash.Scene
+		var sceneCount int
+		var err error
+		if scanPartial {
+			scenes, sceneCount, err = findScenes(s.graphqlClient, nil, 1, batchSize)
+		} else {
+			scenes, sceneCount, err = findScenes(s.graphqlClient, &scannedTagID, 1, batchSize)
+		}
 		if err != nil {
 			return fmt.Errorf("failed to query scenes: %w", err)
+		}
+
+		if page == 1 {
+			total = sceneCount
+
+			// Apply limit if specified
+			if limit > 0 && limit < total {
+				total = limit
+				log.Infof("Found %d scenes, limiting to %d", sceneCount, limit)
+			} else {
+				log.Infof("Found %d scenes to process", total)
+			}
 		}
 
 		if len(scenes) == 0 {
 			break
 		}
 
-		log.Infof("Processing batch %d: %d scenes (total: %d)", page, len(scenes), total)
+		log.Infof("Processing batch %d: %d scenes", page, len(scenes))
 
 		// Process each scene
-		for i, scene := range scenes {
+		for _, scene := range scenes {
 			if s.stopping {
 				return fmt.Errorf("task cancelled")
 			}
 
-			progress := float64((page-1)*batchSize+i) / float64(total)
+			// Check if limit reached
+			if limit > 0 && processedCount >= limit {
+				log.Infof("Reached limit of %d scenes, stopping", limit)
+				break
+			}
+
+			processedCount++
+			progress := float64(processedCount) / float64(total)
 			log.Progress(progress)
 
-			log.Infof("[%d/%d] Processing scene %s", (page-1)*batchSize+i+1, total, scene.ID)
+			log.Infof("[%d/%d] Processing scene %s", processedCount, total, scene.ID)
 
 			err := s.processScene(visionClient, scene, scannedTagID, matchedTagID, useSprites)
 			if err != nil {
@@ -82,8 +115,13 @@ func (s *Service) recognizeScenes(useSprites bool) error {
 			}
 		}
 
+		// Break outer loop if limit reached
+		if limit > 0 && processedCount >= limit {
+			break
+		}
+
 		// Apply cooldown after batch
-		if len(scenes) == batchSize {
+		if len(scenes) == batchSize && processedCount < total {
 			s.applyCooldown()
 		}
 
@@ -93,7 +131,7 @@ func (s *Service) recognizeScenes(useSprites bool) error {
 	}
 
 	log.Progress(1.0)
-	log.Info("Scene recognition completed")
+	log.Infof("Scene recognition completed: %d scenes processed", processedCount)
 
 	// Trigger metadata scan
 	if err := stash.TriggerMetadataScan(s.graphqlClient); err != nil {
@@ -114,11 +152,42 @@ func (s *Service) processScene(visionClient *vision.VisionServiceClient, scene s
 	// Build Vision Service request
 	var spriteVTT, spriteImage string
 	if useSprites {
-		spriteVTT = scene.Paths.VTT
-		spriteImage = scene.Paths.Sprite
+		spriteVTT = s.NormalizeHost(scene.Paths.VTT)
+		spriteImage = s.NormalizeHost(scene.Paths.Sprite)
 	}
 
-	request := vision.BuildAnalyzeRequest(videoPath, string(scene.ID), useSprites, spriteVTT, spriteImage)
+	minConfidence := s.config.MinSceneConfidenceScore
+	minQuality := s.config.MinSceneProcessingQualityScore
+	qualityTrigger := s.config.EnhanceQualityScoreTrigger
+
+	enhancementParams := vision.EnhancementParameters{
+		Enabled:        true,
+		QualityTrigger: qualityTrigger,
+		Model:          "codeformer",
+		FidelityWeight: 0.25,
+	}
+
+	parameters := vision.FacesParameters{
+		FaceMinConfidence:            minConfidence, // Mid-High confidence detections only
+		FaceMinQuality:               minQuality,    // Minimum quality threshold
+		MaxFaces:                     50,            // Maximum unique faces to extract
+		SamplingInterval:             2.0,           // Sample every 2 seconds initially
+		UseSprites:                   useSprites,
+		SpriteVTTURL:                 spriteVTT,
+		SpriteImageURL:               spriteImage,
+		EnableDeduplication:          true,               // De-duplicate faces across video
+		EmbeddingSimilarityThreshold: 0.6,                // Cosine similarity threshold for clustering
+		DetectDemographics:           true,               // Detect age, gender, emotion
+		CacheDuration:                3600,               // Cache for 1 hour
+		Enhancement:                  &enhancementParams, // Enable face enhancement
+	}
+
+	request := vision.BuildAnalyzeRequest(videoPath, string(scene.ID), parameters)
+
+	// marshall request into json for logging
+	requestData, _ := json.Marshal(request)
+
+	log.Debugf("Scene %s: Submitting request to Vision Service: %s", scene.ID, string(requestData))
 
 	// Submit job
 	jobResp, err := visionClient.SubmitJob(request)
@@ -132,6 +201,7 @@ func (s *Service) processScene(visionClient *vision.VisionServiceClient, scene s
 	results, err := visionClient.WaitForCompletion(jobResp.JobID, func(p float64) {
 		log.Debugf("Scene %s: Vision Service progress: %.1f%%", scene.ID, p*100)
 	})
+	log.Debugf("Error from Vision Service: %v", err)
 	if err != nil {
 		return fmt.Errorf("vision service job failed: %w", err)
 	}
@@ -146,24 +216,37 @@ func (s *Service) processScene(visionClient *vision.VisionServiceClient, scene s
 		return nil
 	}
 
-	log.Infof("Scene %s: Found %d unique faces", scene.ID, len(results.Faces.Faces))
-
-	// Process each face
-	matchedPerformers := []graphql.ID{}
+	facesDetected := 0
 	for _, face := range results.Faces.Faces {
-		performerID, err := s.processSceneFace(scene, face)
+		det := face.RepresentativeDetection
+		if det.QualityScore >= s.config.MinSceneProcessingQualityScore {
+			facesDetected++
+		}
+	}
+	log.Infof("Scene %s: Found %d processable faces out of %d total faces", scene.ID, facesDetected, len(results.Faces.Faces))
+
+	// Get result requestMetadata
+	requestMetadata := results.Faces.Metadata
+
+	// Process each face and track results
+	matchedPerformers := []graphql.ID{}
+	facesProcessed := 0 // Faces that were either matched or created as new subjects
+
+	for _, face := range results.Faces.Faces {
+		performerID, err := s.processSceneFace(visionClient, scene, face, requestMetadata)
 		if err != nil {
 			log.Warnf("Failed to process face %s: %v", face.FaceID, err)
 			continue
 		}
 		if performerID != "" {
 			matchedPerformers = append(matchedPerformers, performerID)
+			facesProcessed++
 		}
 	}
 
 	// Update scene with matched performers
 	if len(matchedPerformers) > 0 {
-		log.Infof("Scene %s: Matched %d performers", scene.ID, len(matchedPerformers))
+		log.Infof("Scene %s: Matched/created %d performers", scene.ID, len(matchedPerformers))
 		if err := updateScenePerformers(s.graphqlClient, scene.ID, matchedPerformers); err != nil {
 			log.Warnf("Failed to update scene performers: %v", err)
 		}
@@ -179,28 +262,65 @@ func (s *Service) processScene(visionClient *vision.VisionServiceClient, scene s
 		log.Warnf("Failed to add scanned tag: %v", err)
 	}
 
+	// Apply partial/complete tagging logic
+	if err := s.applySceneCompletionTags(scene.ID, facesDetected, facesProcessed); err != nil {
+		log.Warnf("Failed to apply completion tags: %v", err)
+	}
+
 	return nil
 }
 
 // processSceneFace processes a single detected face from Vision Service
-func (s *Service) processSceneFace(scene stash.Scene, face vision.VisionFace) (graphql.ID, error) {
+func (s *Service) processSceneFace(visionClient *vision.VisionServiceClient, scene stash.Scene, face vision.VisionFace, metadata vision.ResultMetadata) (graphql.ID, error) {
 	// Get the representative detection (best quality frame)
 	det := face.RepresentativeDetection
 
-	log.Debugf("Processing face %s: timestamp=%.2fs, confidence=%.2f, quality=%.2f",
-		face.FaceID, det.Timestamp, det.Confidence, det.QualityScore)
+	// check for null
+	isEnhancedFace := det.Enhanced
+	var frameEnhancement *vision.EnhancementParameters
+	if metadata.FrameEnhancement != nil && isEnhancedFace {
+		frameEnhancement = metadata.FrameEnhancement
+	}
 
-	// Extract frame from video at the representative detection timestamp
-	videoPath := scene.Files[0].Path
-	frameBytes, err := s.extractFrameAtTimestamp(videoPath, det.Timestamp)
-	if err != nil {
-		return "", fmt.Errorf("failed to extract frame at %.2fs: %w", det.Timestamp, err)
+	log.Debugf("Processing face %s: timestamp=%.2fs, confidence=%.2f, quality=%.2f enhanced=%v occluded=%v method=%s",
+		face.FaceID, det.Timestamp, det.Confidence, det.QualityScore, isEnhancedFace, det.Occluded, metadata.Method)
+
+	if det.Occluded {
+		log.Debugf("Detected occluded face %s (occlusion_probability=%.2f)", face.FaceID, det.OcclusionProbability)
+	}
+
+	// Extract frame/thumbnail based on detection method
+	var frameBytes []byte
+	var err error
+
+	spriteVTT := s.NormalizeHost(scene.Paths.VTT)
+	spriteImage := s.NormalizeHost(scene.Paths.Sprite)
+
+	if metadata.Method == "sprites" {
+		// Extract thumbnail from sprite image
+		log.Debugf("Extracting face from sprite: vtt=%s, sprite=%s, timestamp=%.2f",
+			spriteVTT, spriteImage, det.Timestamp)
+		frameBytes, err = ExtractFromSprite(spriteImage, spriteVTT, det.Timestamp)
+		if err != nil {
+			return "", fmt.Errorf("failed to extract sprite thumbnail at %.2fs: %w", det.Timestamp, err)
+		}
+	} else {
+		// Extract frame from video at the representative detection timestamp
+		videoPath := scene.Files[0].Path
+		frameBytes, err = visionClient.ExtractFrame(videoPath, det.Timestamp, frameEnhancement)
+		if err != nil {
+			return "", fmt.Errorf("failed to extract frame at %.2fs: %w", det.Timestamp, err)
+		}
 	}
 
 	// Crop face from frame using bounding box
 	faceCrop, err := s.cropFaceFromFrame(frameBytes, det.BBox)
 	if err != nil {
-		return "", fmt.Errorf("failed to crop face: %w", err)
+		if faceCrop != nil {
+			log.Warnf("Using uncropped frame for face %s due to cropping error: %v", face.FaceID, err)
+		} else {
+			return "", fmt.Errorf("failed to crop face: %w", err)
+		}
 	}
 
 	log.Debugf("Extracted and cropped face from frame (%.0f bytes)", len(faceCrop))
@@ -223,6 +343,8 @@ func (s *Service) processSceneFace(scene stash.Scene, face vision.VisionFace) (g
 		subject := bestMatch.Subject
 		similarity := bestMatch.Similarity
 
+		log.Debugf("Face %s matched to Compreface subject %s (similarity: %.2f)", face.FaceID, subject, similarity)
+
 		// Find performer with matching alias
 		performerID, err := stash.FindPerformerBySubjectName(s.graphqlClient, subject)
 		if err != nil {
@@ -231,9 +353,13 @@ func (s *Service) processSceneFace(scene stash.Scene, face vision.VisionFace) (g
 
 		if performerID != "" {
 			// Get performer details for logging
-			// TODO: Add a GetPerformer method to get name for logging
-			log.Infof("Matched face %s to performer (subject: %s, similarity: %.2f)",
-				face.FaceID, subject, similarity)
+			performerName := "Undetermined"
+			performer, err := stash.GetPerformerByID(s.graphqlClient, performerID)
+			if err == nil && performer != nil {
+				performerName = performer.Name
+			}
+			log.Infof("Matched face %s to performer (name: %s, subject: %s, similarity: %.2f)",
+				face.FaceID, performerName, subject, similarity)
 			return performerID, nil
 		}
 
@@ -242,8 +368,19 @@ func (s *Service) processSceneFace(scene stash.Scene, face vision.VisionFace) (g
 	}
 
 createNewSubject:
+	// Check quality score before creating new subject
+	// Only create subjects from high-quality unmatched faces
+	if det.QualityScore < s.config.MinSceneQualityScore {
+		log.Debugf("Skipping low-quality unmatched face %s (quality: %.2f < threshold: %.2f)",
+			face.FaceID, det.QualityScore, s.config.MinSceneQualityScore)
+		return "", nil
+	}
+
 	// No match - create new subject and performer
 	subjectName := createSubjectName(string(scene.ID), face.FaceID)
+
+	log.Debugf("Creating new subject for unmatched face %s (quality: %.2f >= threshold: %.2f)",
+		face.FaceID, det.QualityScore, s.config.MinSceneQualityScore)
 
 	// Add subject to Compreface with face crop
 	addResponse, err := s.comprefaceClient.AddSubjectFromBytes(subjectName, faceCrop, "face.jpg")
@@ -261,7 +398,14 @@ createNewSubject:
 		age = face.Demographics.Age
 	}
 
-	performer, err := s.createPerformerWithDetails(subjectName, []string{subjectName}, gender, age)
+	performerSubject := stash.PerformerSubject{
+		Name:   subjectName,
+		Age:    age,
+		Gender: gender,
+		Image:  s.comprefaceClient.SubjectImageURL(addResponse.ImageID),
+	}
+
+	performer, err := s.createPerformerWithDetails(performerSubject)
 	if err != nil {
 		return "", fmt.Errorf("failed to create performer: %w", err)
 	}
@@ -269,80 +413,245 @@ createNewSubject:
 	log.Infof("Created new performer %s for unknown face %s (subject: %s, age: %d, gender: %s)",
 		performer.Name, face.FaceID, subjectName, age, gender)
 
-	return performer.ID, nil
-}
-
-// extractFrameAtTimestamp extracts a frame from a video file at the specified timestamp
-// Uses Vision Service's extract-frame endpoint for on-demand frame extraction
-func (s *Service) extractFrameAtTimestamp(videoPath string, timestamp float64) ([]byte, error) {
-	// Use Vision Service frame extraction endpoint
-	// Note: This endpoint is on the Frame Server (port 5001), not the Vision API
-	// For now, we'll use a direct HTTP request. In the future, this could be added to the VisionServiceClient
-
-	frameServerURL := "http://localhost:5001" // Frame server port
-	url := fmt.Sprintf("%s/extract-frame?video_path=%s&timestamp=%.2f&output_format=jpeg&quality=95",
-		frameServerURL, videoPath, timestamp)
-
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("failed to request frame: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("frame extraction failed: status %d", resp.StatusCode)
-	}
-
-	frameBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read frame: %w", err)
-	}
-
-	return frameBytes, nil
+	return graphql.ID(performer.ID), nil
 }
 
 // cropFaceFromFrame crops a face region from a frame using the bounding box
 func (s *Service) cropFaceFromFrame(frameBytes []byte, bbox vision.VisionBoundingBox) ([]byte, error) {
-	// TODO: Implement proper image cropping
-	// For now, return the full frame - the Vision Service already provides good face crops
-	// In the future, we could use an image processing library to crop precisely
-	return frameBytes, nil
+	// Decode frame bytes to image.Image
+	img, _, err := image.Decode(bytes.NewReader(frameBytes))
+	if err != nil {
+		return frameBytes, fmt.Errorf("failed to decode frame: %w", err)
+	}
+
+	// Convert Vision bbox to Compreface bbox (same structure, just different types)
+	cfBox := compreface.BoundingBox{
+		XMin: bbox.XMin,
+		YMin: bbox.YMin,
+		XMax: bbox.XMax,
+		YMax: bbox.YMax,
+	}
+
+	// Reuse existing cropping logic with padding
+	padding := 10 // Match images.go behavior
+	cropped, err := s.extractBoxImage(img, cfBox, padding)
+	if err != nil {
+		return frameBytes, fmt.Errorf("failed to crop face region: %w", err)
+	}
+
+	// Encode cropped image back to JPEG bytes
+	buf := new(bytes.Buffer)
+	if err := jpeg.Encode(buf, cropped, &jpeg.Options{Quality: 90}); err != nil {
+		return frameBytes, fmt.Errorf("failed to encode cropped face: %w", err)
+	}
+
+	return buf.Bytes(), nil
 }
 
 // createSubjectName creates a unique subject name for Compreface
-// Format: "Person {scene_id}_{face_id} {random}"
-func createSubjectName(sceneID, faceID string) string {
-	return compreface.CreateSubjectName(fmt.Sprintf("%s_%s", sceneID, faceID))
+// Format: "Person {scene_id} {random}"
+func createSubjectName(sceneID, _ string) string {
+	return compreface.CreateSubjectName(sceneID)
+}
+
+// applySceneCompletionTags applies partial/complete tags based on face processing results
+func (s *Service) applySceneCompletionTags(sceneID graphql.ID, facesDetected, facesProcessed int) error {
+	// Skip completion tagging if no faces were processed (all skipped due to quality or errors)
+	if facesProcessed == 0 {
+		log.Debugf("Scene %s: No faces processed, skipping partial/complete tagging", sceneID)
+		return nil
+	}
+
+	var completionTag string
+	var removeTag string
+
+	// Determine completion status
+	if facesProcessed == facesDetected {
+		// All faces matched or created - complete
+		completionTag = s.config.CompleteTagName
+		removeTag = s.config.PartialTagName
+		log.Infof("Scene %s: All %d face(s) processed - marking as Complete", sceneID, facesDetected)
+	} else {
+		// Some faces skipped (low quality) - partial
+		completionTag = s.config.PartialTagName
+		removeTag = s.config.CompleteTagName
+		log.Infof("Scene %s: %d/%d face(s) processed - marking as Partial", sceneID, facesProcessed, facesDetected)
+	}
+
+	// Get current scene to retrieve existing tags
+	scene, err := stash.GetScene(s.graphqlClient, sceneID)
+	if err != nil {
+		return fmt.Errorf("failed to get scene: %w", err)
+	}
+
+	// Build list of tag IDs, removing the opposite completion tag
+	removeTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, removeTag, removeTag)
+	if err != nil {
+		return fmt.Errorf("failed to get remove tag: %w", err)
+	}
+
+	// Get completion tag ID
+	completionTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, completionTag, completionTag)
+	if err != nil {
+		return fmt.Errorf("failed to get completion tag: %w", err)
+	}
+
+	// Build new tag list: existing tags minus removeTag, plus completionTag
+	tagIDs := []graphql.ID{}
+	hasCompletionTag := false
+
+	for _, tag := range scene.Tags {
+		if tag.ID == removeTagID {
+			// Skip the tag we want to remove
+			continue
+		}
+		if tag.ID == completionTagID {
+			hasCompletionTag = true
+		}
+		tagIDs = append(tagIDs, tag.ID)
+	}
+
+	// Add completion tag if not already present
+	if !hasCompletionTag {
+		tagIDs = append(tagIDs, completionTagID)
+	}
+
+	// Update scene tags
+	return stash.UpdateSceneTags(s.graphqlClient, sceneID, tagIDs)
 }
 
 // Helper functions for scene GraphQL operations
 
-func findScenes(client *graphql.Client, page, perPage int) ([]stash.Scene, int, error) {
-	// TODO: Implement scene query
-	// For now, return empty to allow compilation
-	return []stash.Scene{}, 0, fmt.Errorf("scene query not yet implemented")
+// Find scenes with filtering
+func findScenes(client *graphql.Client, scannedTagID *graphql.ID, page, perPage int) ([]stash.Scene, int, error) {
+	var tagsFilter stash.HierarchicalMultiCriterionInput
+	var filter stash.SceneFilterType = stash.SceneFilterType{}
+
+	// Build filter to exclude already scanned scenes
+	if scannedTagID != nil {
+		tagsFilter = stash.HierarchicalMultiCriterionInput{
+			Value:    []string{string(*scannedTagID)},
+			Modifier: stash.CriterionModifierExcludes,
+		}
+		filter.Tags = &tagsFilter
+	}
+
+	return stash.FindScenes(client, &filter, page, perPage)
 }
 
+// Add tag to scene (preserving existing tags)
 func addTagToScene(client *graphql.Client, sceneID graphql.ID, tagID graphql.ID) error {
-	// TODO: Implement scene tag mutation
-	return fmt.Errorf("scene tag mutation not yet implemented")
+	return stash.AddTagToScene(client, sceneID, tagID)
 }
 
+// Update scene performers (preserving existing performers)
 func updateScenePerformers(client *graphql.Client, sceneID graphql.ID, performerIDs []graphql.ID) error {
-	// TODO: Implement scene performer mutation
-	return fmt.Errorf("scene performer mutation not yet implemented")
+	return stash.UpdateScenePerformers(client, sceneID, performerIDs)
 }
 
-func (s *Service) createPerformerWithDetails(name string, aliases []string, gender string, age int) (*stash.Performer, error) {
-	// TODO: Implement performer creation with demographics
-	// For now, use simple creation
-	performerID, err := stash.CreatePerformer(s.graphqlClient, name, aliases)
+// createPerformerWithDetails creates a performer with the given subject details
+func (s *Service) createPerformerWithDetails(performerSubject stash.PerformerSubject) (*stash.Performer, error) {
+	performerID, err := stash.CreatePerformer(s.graphqlClient, performerSubject)
 	if err != nil {
 		return nil, err
 	}
 
 	return &stash.Performer{
 		ID:   performerID,
-		Name: name,
+		Name: performerSubject.Name,
 	}, nil
+}
+
+// resetUnmatchedScenes removes scanned tags from unmatched scenes
+func (s *Service) resetUnmatchedScenes(limit int) error {
+	if s.stopping {
+		return fmt.Errorf("operation cancelled")
+	}
+
+	log.Infof("Starting reset of unmatched scenes (limit=%d)", limit)
+
+	// Step 1: Get tag IDs
+	scannedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.ScannedTagName, "Compreface Scanned")
+	if err != nil {
+		return fmt.Errorf("failed to get scanned tag: %w", err)
+	}
+
+	matchedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.MatchedTagName, "Compreface Matched")
+	if err != nil {
+		return fmt.Errorf("failed to get matched tag: %w", err)
+	}
+
+	log.Infof("Searching for unmatched scenes (scanned but not matched)")
+
+	// Step 2: Find scenes with scanned tag but no matched tag
+	tagsFilter := stash.HierarchicalMultiCriterionInput{
+		Value:    []string{string(scannedTagID)},
+		Modifier: stash.CriterionModifierIncludesAll,
+	}
+	filter := stash.SceneFilterType{
+		Tags: &tagsFilter,
+	}
+
+	scenes, count, err := stash.FindScenes(s.graphqlClient, &filter, 1, -1)
+	if err != nil {
+		return fmt.Errorf("failed to query scenes: %w", err)
+	}
+
+	log.Infof("Found %d scanned scenes", count)
+
+	// Step 3: Filter for images without matched tag
+	var unmatchedScenes []graphql.ID
+	for _, scene := range scenes {
+		hasMatchedTag := false
+		for _, tag := range scene.Tags {
+			if tag.ID == matchedTagID {
+				hasMatchedTag = true
+				break
+			}
+		}
+
+		if !hasMatchedTag {
+			unmatchedScenes = append(unmatchedScenes, scene.ID)
+		}
+	}
+
+	if len(unmatchedScenes) == 0 {
+		log.Info("No unmatched scenes found")
+		return nil
+	}
+
+	total := len(unmatchedScenes)
+
+	// Apply limit if specified
+	if limit > 0 && limit < total {
+		unmatchedScenes = unmatchedScenes[:limit]
+		log.Infof("Found %d unmatched scenes, limiting to %d", total, limit)
+	} else {
+		log.Infof("Found %d unmatched scenes to reset", total)
+	}
+
+	// Step 4: Remove scanned tag from unmatched scenes
+	resetCount := 0
+	for i, sceneID := range unmatchedScenes {
+		if s.stopping {
+			return fmt.Errorf("operation cancelled")
+		}
+
+		progress := float64(i) / float64(len(unmatchedScenes))
+		log.Progress(progress)
+
+		err := stash.RemoveTagFromScene(s.graphqlClient, sceneID, scannedTagID)
+		if err != nil {
+			log.Warnf("Failed to remove tag from scene %s: %v", sceneID, err)
+			continue
+		}
+
+		resetCount++
+		log.Debugf("Reset scene %s (%d/%d)", sceneID, i+1, len(unmatchedScenes))
+	}
+
+	log.Progress(1.0)
+	log.Infof("Reset complete: %d scenes processed", resetCount)
+
+	return nil
 }
