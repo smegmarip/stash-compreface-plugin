@@ -8,36 +8,27 @@ import (
 	"github.com/stashapp/stash/pkg/plugin/common/log"
 )
 
-// FindScenesResult represents the result of FindScenes query
-type FindScenesResult struct {
-	Count  int     `graphql:"count"`
-	Scenes []Scene `graphql:"scenes"`
-}
-
-// SceneUpdateInput represents input for updating a scene
-type SceneUpdateInput struct {
-	ID           graphql.ID   `json:"id"`
-	TagIds       []graphql.ID `json:"tag_ids,omitempty"`
-	PerformerIds []graphql.ID `json:"performer_ids,omitempty"`
-}
-
 // FindScenes queries scenes with pagination
-func FindScenes(client *graphql.Client, page, perPage int) ([]Scene, int, error) {
+func FindScenes(client *graphql.Client, filter *SceneFilterType, page, perPage int) ([]Scene, int, error) {
 	ctx := context.Background()
 
 	var query struct {
-		FindScenes FindScenesResult `graphql:"findScenes(filter: $f)"`
+		FindScenes struct {
+			Count  int     `graphql:"count"`
+			Scenes []Scene `graphql:"scenes"`
+		} `graphql:"findScenes(filter: $filter, scene_filter: $scene_filter)"`
 	}
 
-	pageInt := graphql.Int(page)
-	perPageInt := graphql.Int(perPage)
+	pageInt := int(page)
+	perPageInt := int(perPage)
 	filterInput := &FindFilterType{
 		Page:    &pageInt,
 		PerPage: &perPageInt,
 	}
 
 	variables := map[string]interface{}{
-		"f": filterInput,
+		"filter":       filterInput,
+		"scene_filter": filter,
 	}
 
 	err := client.Query(ctx, &query, variables)
@@ -74,6 +65,27 @@ func GetScene(client *graphql.Client, sceneID graphql.ID) (*Scene, error) {
 	return query.FindScene, nil
 }
 
+// UpdateScene updates a scene with the provided input
+func UpdateScene(client *graphql.Client, sceneID graphql.ID, input SceneUpdateInput) error {
+	ctx := context.Background()
+
+	var mutation struct {
+		SceneUpdate SceneUpdateInput `graphql:"sceneUpdate(input: $input)"`
+	}
+
+	variables := map[string]interface{}{
+		"input": input,
+	}
+
+	err := client.Mutate(ctx, &mutation, variables)
+	if err != nil {
+		return fmt.Errorf("scene update mutation failed: %w", err)
+	}
+
+	log.Infof("Successfully updated scene %s", sceneID)
+	return nil
+}
+
 // AddTagToScene adds a tag to a scene (preserving existing tags)
 func AddTagToScene(client *graphql.Client, sceneID graphql.ID, tagID graphql.ID) error {
 	// First, get the current scene to retrieve existing tags
@@ -104,29 +116,48 @@ func AddTagToScene(client *graphql.Client, sceneID graphql.ID, tagID graphql.ID)
 
 // UpdateSceneTags updates a scene's tags (replaces all tags)
 func UpdateSceneTags(client *graphql.Client, sceneID graphql.ID, tagIDs []graphql.ID) error {
-	ctx := context.Background()
-
-	var mutation struct {
-		SceneUpdate struct {
-			ID graphql.ID
-		} `graphql:"sceneUpdate(input: $input)"`
+	sceneIDStr := string(sceneID)
+	tagIDStrs := make([]string, len(tagIDs))
+	for i, id := range tagIDs {
+		tagIDStrs[i] = string(id)
 	}
 
-	updateInput := SceneUpdateInput{
-		ID:     sceneID,
-		TagIds: tagIDs,
+	input := SceneUpdateInput{
+		ID:     sceneIDStr,
+		TagIds: tagIDStrs,
 	}
 
-	variables := map[string]interface{}{
-		"input": updateInput,
-	}
-
-	err := client.Mutate(ctx, &mutation, variables)
+	err := UpdateScene(client, sceneID, input)
 	if err != nil {
-		return fmt.Errorf("scene update mutation failed: %w", err)
+		return fmt.Errorf("failed to update scene tags: %w", err)
 	}
 
-	log.Debugf("Successfully updated tags for scene %s", sceneID)
+	log.Debugf("Updated tags for scene %s", sceneID)
+	return nil
+}
+
+// RemoveTagFromScene removes a tag from a scene
+func RemoveTagFromScene(client *graphql.Client, sceneID graphql.ID, tagID graphql.ID) error {
+	// Get current tags
+	scene, err := GetScene(client, sceneID)
+	if err != nil {
+		return fmt.Errorf("failed to get scene: %w", err)
+	}
+
+	// Filter out the tag to remove
+	tagIDs := []graphql.ID{}
+	for _, tag := range scene.Tags {
+		if tag.ID != tagID {
+			tagIDs = append(tagIDs, tag.ID)
+		}
+	}
+
+	err = UpdateSceneTags(client, sceneID, tagIDs)
+	if err != nil {
+		return fmt.Errorf("failed to remove tag from scene: %w", err)
+	}
+
+	log.Tracef("Removed tag %s from scene %s", tagID, sceneID)
 	return nil
 }
 
@@ -140,9 +171,15 @@ func UpdateScenePerformers(client *graphql.Client, sceneID graphql.ID, performer
 		} `graphql:"sceneUpdate(input: $input)"`
 	}
 
+	sceneIDStr := string(sceneID)
+	performerIDStrs := make([]string, len(performerIDs))
+	for i, id := range performerIDs {
+		performerIDStrs[i] = string(id)
+	}
+
 	updateInput := SceneUpdateInput{
-		ID:           sceneID,
-		PerformerIds: performerIDs,
+		ID:           sceneIDStr,
+		PerformerIds: performerIDStrs,
 	}
 
 	variables := map[string]interface{}{

@@ -29,7 +29,7 @@ func findOrCreateTag(client *graphql.Client, cache *TagCache, tagName string) (g
 
 	filterInput := &TagFilterType{
 		Name: &StringCriterionInput{
-			Value:    graphql.String(tagName),
+			Value:    tagName,
 			Modifier: "EQUALS",
 		},
 	}

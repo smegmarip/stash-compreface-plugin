@@ -3,7 +3,8 @@ package stash
 import (
 	"context"
 	"fmt"
-	"strings"
+	"io"
+	"net/http"
 
 	graphql "github.com/hasura/go-graphql-client"
 	"github.com/stashapp/stash/pkg/plugin/common/log"
@@ -14,23 +15,29 @@ import (
 // ============================================================================
 
 // FindImages finds images with optional filtering
-func FindImages(client *graphql.Client, filter map[string]interface{}, page int, perPage int) ([]Image, int, error) {
+func FindImages(client *graphql.Client, filter *ImageFilterType, page int, perPage int) ([]Image, int, error) {
 	var query struct {
 		FindImages struct {
 			Count  int
 			Images []Image
-		} `graphql:"findImages(filter: $page_filter)"`
+		} `graphql:"findImages(filter: $filter, image_filter: $image_filter)"`
 	}
 
-	pageInt := graphql.Int(page)
-	perPageInt := graphql.Int(perPage)
-	pageFilter := &FindFilterType{
+	pageInt := int(page)
+	perPageInt := int(perPage)
+	filterInput := &FindFilterType{
 		Page:    &pageInt,
 		PerPage: &perPageInt,
 	}
 
 	variables := map[string]interface{}{
-		"page_filter": pageFilter,
+		"filter": filterInput,
+	}
+
+	if filter != nil {
+		variables["image_filter"] = filter
+	} else {
+		variables["image_filter"] = ImageFilterType{}
 	}
 
 	err := client.Query(context.Background(), &query, variables)
@@ -61,29 +68,18 @@ func GetImage(client *graphql.Client, imageID graphql.ID) (*Image, error) {
 }
 
 // UpdateImage updates image tags and performers
-func UpdateImage(client *graphql.Client, imageID graphql.ID, tagIDs []graphql.ID, performerIDs []graphql.ID) error {
+func UpdateImage(client *graphql.Client, imageID graphql.ID, input ImageUpdateInput) error {
+	ctx := context.Background()
+
 	var mutation struct {
-		ImageUpdate struct {
-			ID graphql.ID
-		} `graphql:"imageUpdate(input: $input)"`
-	}
-
-	input := &ImageUpdateInput{
-		ID: imageID,
-	}
-
-	if tagIDs != nil {
-		input.TagIds = tagIDs
-	}
-	if performerIDs != nil {
-		input.PerformerIds = performerIDs
+		ImageUpdate ImageUpdate `graphql:"imageUpdate(input: $input)"`
 	}
 
 	variables := map[string]interface{}{
 		"input": input,
 	}
 
-	err := client.Mutate(context.Background(), &mutation, variables)
+	err := client.Mutate(ctx, &mutation, variables)
 	if err != nil {
 		return fmt.Errorf("failed to update image: %w", err)
 	}
@@ -94,8 +90,6 @@ func UpdateImage(client *graphql.Client, imageID graphql.ID, tagIDs []graphql.ID
 
 // AddTagToImage adds a tag to an image
 func AddTagToImage(client *graphql.Client, imageID graphql.ID, tagID graphql.ID) error {
-	ctx := context.Background()
-
 	// First get current tags
 	image, err := GetImage(client, imageID)
 	if err != nil {
@@ -123,18 +117,15 @@ func AddTagToImage(client *graphql.Client, imageID graphql.ID, tagID graphql.ID)
 	// Build tag_ids array as JSON
 	tagIDStrs := make([]string, len(tagIDs))
 	for i, id := range tagIDs {
-		tagIDStrs[i] = fmt.Sprintf("\"%s\"", id)
+		tagIDStrs[i] = string(id)
 	}
-	tagIDsJSON := "[" + strings.Join(tagIDStrs, ",") + "]"
 
-	// Use ExecRaw to update image
-	query := fmt.Sprintf(`mutation {
-		imageUpdate(input: {id: "%s", tag_ids: %s}) {
-			id
-		}
-	}`, imageID, tagIDsJSON)
+	input := ImageUpdateInput{
+		ID:     string(imageID),
+		TagIds: tagIDStrs,
+	}
 
-	_, err = client.ExecRaw(ctx, query, nil)
+	err = UpdateImage(client, imageID, input)
 	if err != nil {
 		return fmt.Errorf("failed to add tag to image: %w", err)
 	}
@@ -145,8 +136,6 @@ func AddTagToImage(client *graphql.Client, imageID graphql.ID, tagID graphql.ID)
 
 // RemoveTagFromImage removes a tag from an image
 func RemoveTagFromImage(client *graphql.Client, imageID graphql.ID, tagID graphql.ID) error {
-	ctx := context.Background()
-
 	// Get current tags
 	image, err := GetImage(client, imageID)
 	if err != nil {
@@ -154,35 +143,53 @@ func RemoveTagFromImage(client *graphql.Client, imageID graphql.ID, tagID graphq
 	}
 
 	// Filter out the tag to remove
-	tagIDs := []graphql.ID{}
+	tagIDs := []string{}
 	for _, tag := range image.Tags {
 		if tag.ID != tagID {
-			tagIDs = append(tagIDs, tag.ID)
+			tagIDs = append(tagIDs, string(tag.ID))
 		}
 	}
 
-	// Build tag_ids array as JSON
-	tagIDsJSON := "[]"
-	if len(tagIDs) > 0 {
-		tagIDStrs := make([]string, len(tagIDs))
-		for i, id := range tagIDs {
-			tagIDStrs[i] = fmt.Sprintf("\"%s\"", id)
-		}
-		tagIDsJSON = "[" + strings.Join(tagIDStrs, ",") + "]"
+	input := ImageUpdateInput{
+		ID:     string(imageID),
+		TagIds: tagIDs,
 	}
 
-	// Use ExecRaw to update image
-	query := fmt.Sprintf(`mutation {
-		imageUpdate(input: {id: "%s", tag_ids: %s}) {
-			id
-		}
-	}`, imageID, tagIDsJSON)
-
-	_, err = client.ExecRaw(ctx, query, nil)
+	err = UpdateImage(client, imageID, input)
 	if err != nil {
 		return fmt.Errorf("failed to remove tag from image: %w", err)
 	}
 
 	log.Tracef("Removed tag %s from image %s", tagID, imageID)
 	return nil
+}
+
+// DownloadImage downloads an image from Stash HTTP endpoint
+func DownloadImage(imageURL string, sessionCookie *http.Cookie) ([]byte, error) {
+	req, err := http.NewRequest("GET", imageURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	if sessionCookie != nil {
+		req.AddCookie(sessionCookie)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to download image: status %d", resp.StatusCode)
+	}
+
+	imageBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read image: %w", err)
+	}
+
+	return imageBytes, nil
 }
