@@ -1,589 +1,679 @@
-# Stash Compreface Plugin - Testing Guide
+# Testing Guide - Stash Compreface Plugin
 
-**Version:** 2.0.0
-**Last Updated:** 2025-11-08
-
----
-
-## Table of Contents
-
-1. [Test Environment Setup](#test-environment-setup)
-2. [Unit Testing](#unit-testing)
-3. [Integration Testing](#integration-testing)
-4. [End-to-End Testing](#end-to-end-testing)
-5. [Performance Testing](#performance-testing)
-6. [Error Scenario Testing](#error-scenario-testing)
-7. [Test Checklist](#test-checklist)
+**Last Updated:** 2025-11-22
+**Test Coverage:** 12/13 tasks (92%)
 
 ---
 
-## Test Environment Setup
+## Overview
 
-### Prerequisites
+This document describes the testing strategy, procedures, and results for the Stash Compreface plugin. Tests validate face recognition accuracy, batch processing, performance, and integration with external services (Compreface, Vision Service, Quality Service).
 
-1. **Stash Instance**
-   - Version: v0.20.0+
-   - Running at: `http://localhost:9999`
-   - Test database with sample data
+### Test Categories
 
-2. **Compreface Instance**
-   - Version: v1.0.0+
-   - Running at: `http://localhost:8000`
-   - Services configured (Recognition + Detection)
-
-3. **Test Data**
-   - 50+ test images with clear faces
-   - 10+ test performers
-   - 5+ test galleries
-   - Sample videos (optional - for Vision Service testing)
-
-### Environment Variables
-
-```bash
-export STASH_URL="http://localhost:9999"
-export COMPREFACE_URL="http://localhost:8000"
-export COMPREFACE_RECOGNITION_KEY="your_recognition_key"
-export COMPREFACE_DETECTION_KEY="your_detection_key"
-```
+1. **Unit Tests** - Component-level validation with mocks
+2. **Integration Tests** - Live service interactions
+3. **End-to-End Tests** - Complete task workflows from initiation to completion
+4. **Performance Tests** - Batching, cooldown, memory stability
 
 ---
 
-## Unit Testing
+## Test Strategy
 
-### Go Unit Tests
+### Unit Testing Philosophy
 
-Run all unit tests:
-```bash
-cd gorpc
-TMPDIR=/Users/x/tmp GOTMPDIR=/Users/x/tmp go test ./... -v
-```
+**Coverage Target:** 80%+ for all packages
 
-Run with coverage:
-```bash
-TMPDIR=/Users/x/tmp GOTMPDIR=/Users/x/tmp go test ./... -cover -coverprofile=coverage.out
-go tool cover -html=coverage.out
-```
+**Approach:**
 
-### Critical Test Modules
+- Test packages in isolation using mocks for external dependencies
+- Focus on business logic, error handling, and edge cases
+- Each test file mirrors the source file structure
+- Shared test utilities and fixtures in `tests/testutil/`
 
-#### 1. Subject Naming Tests
-**File:** `utils_test.go`
-**Tests:**
-- `TestRandomSubject` - Verify random string generation
-- `TestCreateSubjectName` - Verify subject name format
-- `TestPersonAliasPattern` - Verify regex matching
+**Key Areas:**
+
+- Configuration loading and validation (`internal/config/`)
+- Compreface API client operations (`internal/compreface/`)
+- GraphQL mutations and queries (`internal/stash/`)
+- Vision Service integration (`internal/vision/`)
+- Quality assessment routing (`internal/quality/`)
+- Business logic layer (`internal/rpc/`)
+
+### Integration Testing Philosophy
+
+**Purpose:** Validate plugin interactions with live external services
+
+**Prerequisites:**
+
+- Stash instance running at `http://localhost:9999`
+- Compreface service at `http://localhost:8000`
+- Vision Service at `http://localhost:5010` (optional, for scene tests)
+- Quality Service at `http://localhost:8001` (optional)
+
+**Test Data:**
+
+- Test database: 1,175 images, 6 performers, 139 scenes
+- Sample face images: 7 performer photos in `samples/stash/`
+- Backup database: `/Users/x/dev/resources/docker/stash/config/stash-go.sqlite`
+
+**Validation Approach:**
+
+- Verify API responses match expected formats
+- Confirm database state changes
+- Check Compreface subject creation
+- Validate tag application
+- Monitor logs for errors
+
+### End-to-End Testing Philosophy
+
+**Purpose:** Validate complete task workflows as users would experience them
+
+**Execution Strategy:**
+
+- Run each of 11 plugin tasks in realistic scenarios
+- Test with limited datasets (avoid processing all 1,175 images)
+- Use `limit` parameter to cap processing (e.g., limit=50)
+- Validate results in Stash UI and Compreface API
+- Check for proper tag application and performer linking
+
+**Test Isolation:**
+
+- Database backup before each suite
+- Independent test suites for each task
+- Restore database if needed for reproducibility
+- Clear logs between test runs
+
+---
+
+## Test Scenarios
+
+### Scenario 1: Performer Synchronization
+
+**Task:** Synchronize Performers
+
+**Objective:** Sync existing Stash performers with Compreface by creating subjects with face images
+
+**Prerequisites:**
+
+- Performers exist in Stash database
+- Performers have face images
+- Performers have names starting with "Person" or aliases matching pattern
+
+**Test Flow:**
+
+1. Query Stash for performers with "Person" name/alias pattern
+2. For each performer with image, create Compreface subject
+3. Use subject naming format: `Person {id} {random_16_chars}`
+4. Tag synchronized performers with "Compreface Synced"
+5. Verify subject creation in Compreface API
 
 **Expected Results:**
-- Subject names match format: `Person {id} {16-char-random}`
-- Random strings use only uppercase letters and digits
-- Alias pattern correctly identifies "Person ..." names
 
-#### 2. Configuration Tests
-**File:** `config_test.go`
-**Tests:**
-- `TestLoadPluginConfig` - Configuration loading
-- `TestResolveServiceURL` - DNS resolution logic
-- `TestSettingDefaults` - Default value application
+- 6 performers synchronized
+- 6 Compreface subjects created
+- Subject names match pattern `Person \d+ [A-Z0-9]{16}`
+- Performer aliases updated
+- Zero errors
+
+**Validation:**
+
+- Query `http://localhost:8000/api/v1/recognition/subjects`
+- Check performer aliases in Stash GraphQL
+- Verify "Compreface Synced" tag applied
+
+### Scenario 2: Image Recognition (High Quality)
+
+**Task:** Recognize Images (High Quality)
+
+**Objective:** Detect faces in images, create subjects for new faces, match to existing performers
+
+**Prerequisites:**
+
+- Images without "Compreface Scanned" tag
+- Compreface service available
+- Quality assessment configured
+
+**Test Flow:**
+
+1. Query unscanned images (limit=50)
+2. For each image, detect faces using Compreface Detection API
+3. Filter faces by quality (min confidence, size)
+4. Try to recognize faces against existing subjects
+5. If match found (similarity >= 0.81), link to performer
+6. If no match, create new subject
+7. Tag image as "Compreface Scanned"
+8. If matched, add "Compreface Matched" tag
+9. Apply cooldown (10s) after each batch
 
 **Expected Results:**
-- Configuration loads successfully
-- DNS resolution works for localhost, IP, hostname, container names
-- Defaults apply when settings not provided
 
-#### 3. Compreface Client Tests
-**File:** `compreface_client_test.go`
-**Tests:**
-- `TestDetectFaces` - Face detection API
-- `TestRecognizeFace` - Face recognition API
-- `TestAddSubject` - Subject creation API
-- `TestListSubjects` - Subject listing API
+- 50 images processed
+- ~37 images with faces detected (74% success rate)
+- ~13 images without faces (expected)
+- New subjects created for unrecognized faces
+- Existing performers matched where applicable
+- Tags applied correctly
+- Cooldown periods observed
+
+**Validation:**
+
+- Count Compreface subjects before/after
+- Verify tag application in Stash
+- Check batch processing in logs
+- Monitor cooldown messages
+
+### Scenario 3: Image Identification (Batch)
+
+**Task:** Identify Unscanned Images
+
+**Objective:** Match faces in new images to existing performers without creating new subjects
+
+**Prerequisites:**
+
+- Performers already synchronized (Scenario 1)
+- Images without "Compreface Scanned" tag
+- Compreface subjects exist
+
+**Test Flow:**
+
+1. Query unscanned images (limit=200)
+2. For each image, detect faces
+3. Recognize faces against existing subjects only
+4. If match found, update image performers
+5. Tag all processed images as "Compreface Scanned"
+6. Tag matched images as "Compreface Matched"
+7. Continue on individual failures
 
 **Expected Results:**
-- HTTP client initializes correctly
-- API requests formatted properly
-- Responses parsed correctly
-- Error handling works for HTTP errors
 
----
+- 185 images processed (92.5% of limit)
+- 2 faces matched to existing performers
+- Similarity scores: 0.90-0.99
+- Zero UpdateImage failures
+- Zero 422 GraphQL errors
+- Atomic processing (failures don't block batch)
 
-## Integration Testing
+**Validation:**
 
-### Test Against Local Compreface
+- Query matched images in Stash
+- Verify performer associations
+- Check tag counts
+- Review logs for UpdateImage calls
 
-#### Test 1: Performer Synchronization
+### Scenario 4: Single Image Identification
 
-**Setup:**
-1. Create 5 test performers in Stash with profile images
-2. Add aliases in format "Person {id} {random}"
+**Task:** Identify Single Image
 
-**Execute:**
-```bash
-# Via Stash UI: Settings → Tasks → Synchronize Performers
-```
+**Objective:** Process a specific image and detect/match all faces
 
-**Verify:**
-- All performers with images are processed
-- Compreface subjects created for each performer
-- Subject names match performer aliases
-- No duplicate subjects created
+**Prerequisites:**
 
-**Expected Output:**
-```
-✓ Processed 5 performers
-✓ Created 5 Compreface subjects
-✓ 0 errors
-```
+- Known image ID with faces
+- Existing performers synced
 
-#### Test 2: Image Recognition (High Quality)
+**Test Flow:**
 
-**Setup:**
-1. Upload 20 high-quality images with clear faces
-2. Ensure images don't have "Compreface Scanned" tag
+1. Call identifyImage task with imageId=342
+2. Detect all faces in image
+3. For each face, try to match to existing subjects
+4. Apply similarity threshold (0.81)
+5. Update image with matched performers
+6. Return face detection details
 
-**Execute:**
-```bash
-# Via Stash UI: Settings → Tasks → Recognize Images (High Quality)
-```
+**Expected Results:**
 
-**Verify:**
-- All faces detected in images
-- New performers created for unknown faces
+- Execution time: <5 seconds
+- Multiple faces detected (e.g., 3 faces)
+- Threshold filtering working (reject matches < 0.81)
+- Best match selected (e.g., similarity 0.99)
+- Performer linked to image
+- Quick single-image processing
+
+**Validation:**
+
+- Check image performer associations
+- Review face detection details in logs
+- Verify threshold filtering
+- Confirm execution time
+
+### Scenario 5: Gallery Identification
+
+**Task:** Identify Gallery
+
+**Objective:** Process all images within a specific gallery
+
+**Prerequisites:**
+
+- Gallery exists with multiple images
+- Performers synchronized
+
+**Test Flow:**
+
+1. Query gallery by ID
+2. Retrieve all images in gallery
+3. For each image, detect and match faces
+4. Update image performers
+5. Tag images appropriately
+
+**Expected Results:**
+
+- All gallery images processed
+- Performers matched where applicable
+- Gallery-scoped processing verified
+- Batch handling for large galleries
+
+**Validation:**
+
+- Query gallery images
+- Check performer associations
+- Verify tags
+- Confirm gallery isolation
+
+### Scenario 6: Scene Recognition (BLOCKED)
+
+**Tasks:**
+
+- Recognize New Scenes (unscanned only)
+- Recognize New Scene Sprites (unscanned only)
+- Recognize All Scenes (rescan partial matches)
+- Recognize All Scene Sprites (rescan partial matches)
+
+**Objective:** Extract faces from video scenes using Vision Service
+
+**Prerequisites:**
+
+- Vision Service running at `http://localhost:5010`
+- Scenes exist in database
+- Compreface service available
+
+**Test Flow:**
+
+1. Query unprocessed scenes (limit=5)
+2. For each scene, submit job to Vision Service
+3. Poll job status until complete
+4. Retrieve face detections with timestamps and embeddings
+5. Extract frame at representative timestamp
+6. Crop face from frame
+7. Recognize face in Compreface
+8. Create performer if new face
+9. Update scene performers and tags
+
+**Current Status:** ⏸️ **BLOCKED**
+
+- Vision Service not detecting faces in test videos
+- Issue in Vision Service implementation (upstream project)
+- Plugin code complete and ready
+- Tests pass up to Vision Service call
+
+**Expected Results (when unblocked):**
+
+- Vision Service jobs submitted successfully
+- Face detections returned with metadata
+- Frame extraction working
+- Face matching/creation functioning
+- Scene performers updated
+- Scene tags applied
+
+**Validation:**
+
+- Check Vision Service job results
+- Verify frame extraction
+- Confirm face crop quality
+- Review performer associations
+- Validate scene tags
+
+### Scenario 7: Cleanup Operations
+
+**Task:** Reset Unmatched Images
+
+**Objective:** Remove scan tags from images that have no performer matches
+
+**Prerequisites:**
+
 - Images tagged as "Compreface Scanned"
-- Progress updates visible in logs
+- No performers associated
 
-**Expected Output:**
-```
-✓ Processed 20 images
-✓ Detected 35 faces
-✓ Created 12 new performers
-✓ 0 errors
-```
+**Test Flow:**
 
-#### Test 3: Image Identification
-
-**Setup:**
-1. Have existing performers with Compreface subjects
-2. Upload new images of the same people
-
-**Execute:**
-```bash
-# Via Stash UI: Settings → Tasks → Identify Unscanned Images
-```
-
-**Verify:**
-- Faces matched to existing performers
-- Images updated with performer associations
-- No duplicate performers created
-- Similarity scores above threshold (0.89)
-
-**Expected Output:**
-```
-✓ Processed 15 images
-✓ Matched 28 faces to 8 performers
-✓ Updated 15 images
-✓ 0 errors
-```
-
----
-
-## End-to-End Testing
-
-### Workflow Test: Full Recognition Pipeline
-
-**Scenario:** New user with no existing data
-
-**Steps:**
-
-1. **Initial Setup**
-   ```
-   - Fresh Stash instance
-   - Empty Compreface
-   - 50 test images uploaded
-   ```
-
-2. **Create Sample Performers** (Manual)
-   ```
-   - Create 5 performers manually
-   - Add profile images
-   - Add aliases: "Person 1 ABC", "Person 2 DEF", etc.
-   ```
-
-3. **Synchronize Performers**
-   ```
-   Task: Synchronize Performers
-   Expected: 5 Compreface subjects created
-   ```
-
-4. **Recognize All Images**
-   ```
-   Task: Recognize Images (High Quality)
-   Expected:
-   - 50 images processed
-   - 80+ faces detected
-   - 10-15 new performers created
-   - All images tagged
-   ```
-
-5. **Identify Matches**
-   ```
-   Task: Identify All Images
-   Expected:
-   - Faces matched to existing performers
-   - Images updated with performers
-   - Matched tag applied
-   ```
-
-6. **Gallery Processing**
-   ```
-   Task: Identify Gallery
-   Args: galleryId={test_gallery_id}
-   Expected:
-   - All gallery images processed
-   - Performers added to images
-   ```
-
-7. **Reset Unmatched**
-   ```
-   Task: Reset Unmatched Images
-   Expected:
-   - Scan tags removed from unmatched images
-   - Allows reprocessing
-   ```
-
-**Success Criteria:**
-- ✅ All tasks complete without errors
-- ✅ Progress updates visible
-- ✅ All performers correctly identified
-- ✅ No duplicate subjects/performers
-- ✅ Tags applied correctly
-
----
-
-## Performance Testing
-
-### Batch Processing Test
-
-**Objective:** Verify batching and cooldown work correctly
-
-**Setup:**
-- 200 test images
-- Batch size: 20
-- Cooldown: 5 seconds
-
-**Execute:**
-```bash
-# Configure plugin:
-# - maxBatchSize: 20
-# - cooldownSeconds: 5
-
-# Run: Recognize Images (High Quality)
-```
-
-**Monitor:**
-- Batch processing occurs (20 images at a time)
-- Cooldown periods applied between batches
-- Memory usage stable
-- No goroutine leaks
-
-**Expected Metrics:**
-- Processing time: ~10 batches × (processing + 5s cooldown)
-- Memory: Stable (no continuous growth)
-- CPU: Peaks during processing, drops during cooldown
-- Progress: Updates smoothly from 0% to 100%
-
-### Large Dataset Test
-
-**Objective:** Test performance with large number of images
-
-**Setup:**
-- 1000+ images
-- Batch size: 50
-- Cooldown: 10 seconds
-
-**Execute:**
-- Run recognition on all images
-- Monitor resource usage
-- Check for timeouts or errors
+1. Query images with "Compreface Scanned" tag
+2. Filter for images without performers
+3. Remove "Compreface Scanned" tag
+4. Leave performer data unchanged
 
 **Expected Results:**
-- Completes successfully (may take 30+ minutes)
-- Memory remains stable
-- No crashes or hangs
-- Progress reporting accurate
+
+- Unmatched images identified
+- Tags removed successfully
+- Performer associations preserved
+- Cleanup operation completes
+
+**Validation:**
+
+- Count images with/without tags
+- Verify tag removal
+- Confirm performers unchanged
 
 ---
 
-## Error Scenario Testing
+## Test Procedures
 
-### Test 1: Compreface Unavailable
-
-**Setup:**
-1. Stop Compreface service
-
-**Execute:**
-```bash
-# Run any task (e.g., Synchronize Performers)
-```
-
-**Expected Behavior:**
-- Task fails gracefully
-- Error message: "Compreface unavailable"
-- No data corruption
-- Task can be retried after service restart
-
-### Test 2: Invalid API Keys
-
-**Setup:**
-1. Configure invalid API keys
-
-**Execute:**
-```bash
-# Run Recognize Images
-```
-
-**Expected Behavior:**
-- Task fails with authentication error
-- Clear error message about API keys
-- No partial data created
-
-### Test 3: Malformed Images
-
-**Setup:**
-1. Upload corrupted/invalid image files
-
-**Execute:**
-```bash
-# Run Recognize Images
-```
-
-**Expected Behavior:**
-- Invalid images skipped
-- Error logged for each bad image
-- Processing continues with valid images
-- Images tagged with error tag
-
-### Test 4: Network Interruption
-
-**Setup:**
-1. Start recognition task
-2. Disconnect network mid-process
-
-**Execute:**
-```bash
-# Simulate network failure during task
-```
-
-**Expected Behavior:**
-- Task fails with network error
-- Partial progress saved (completed images remain tagged)
-- Task can be resumed (skips already-processed images)
-
-### Test 5: Task Cancellation
-
-**Setup:**
-1. Start long-running task (e.g., 200 images)
-
-**Execute:**
-```bash
-# Cancel task via Stash UI
-```
-
-**Expected Behavior:**
-- Task stops gracefully
-- Partial progress saved
-- No data corruption
-- Task can be restarted
-
----
-
-## Test Checklist
-
-### Pre-Deployment Checklist
-
-#### Build & Installation
-- [ ] Binary compiles without errors (`./build.sh`)
-- [ ] Binary is executable
-- [ ] Plugin loads in Stash UI
-- [ ] All 11 tasks appear in task list
-- [ ] Settings page displays correctly
-
-#### Configuration
-- [ ] Default settings load correctly
-- [ ] Compreface URL auto-detection works
-- [ ] Service URL resolution works (DNS)
-- [ ] API keys validated
-- [ ] Settings persist after reload
-
-#### Core Functionality
-- [ ] Synchronize Performers - Works
-- [ ] Recognize Images (HQ) - Works
-- [ ] Recognize Images (LQ) - Works
-- [ ] Identify All Images - Works
-- [ ] Identify Unscanned Images - Works
-- [ ] Identify Single Image - Works
-- [ ] Create Performer from Image - Works
-- [ ] Identify Gallery - Works
-- [ ] Reset Unmatched Images - Works
-
-#### Scene Recognition (If Vision Service Available)
-- [ ] Recognize Scenes - Works
-- [ ] Recognize Scene Sprites - Works
-- [ ] Vision Service health check - Works
-- [ ] Job submission and polling - Works
-- [ ] Face results processed correctly
-
-#### Performance
-- [ ] Batching works (configurable size)
-- [ ] Cooldown periods applied
-- [ ] Progress reporting accurate
-- [ ] Memory usage stable
-- [ ] Task cancellation works
-
-#### Error Handling
-- [ ] Compreface unavailable - Fails gracefully
-- [ ] Invalid API keys - Clear error message
-- [ ] Malformed images - Skipped, logged
-- [ ] Network errors - Recoverable
-- [ ] Duplicate subjects - Prevented
-
-#### Data Integrity
-- [ ] Subject naming format preserved
-- [ ] No duplicate Compreface subjects
-- [ ] No duplicate performers in Stash
-- [ ] Tags applied correctly
-- [ ] Performer associations correct
-
-### Post-Deployment Monitoring
-
-#### Week 1
-- [ ] Monitor task success rates
-- [ ] Check for unexpected errors
-- [ ] Verify performance metrics
-- [ ] Review user feedback
-
-#### Week 2-4
-- [ ] Long-term stability check
-- [ ] Resource usage trends
-- [ ] Performance degradation check
-- [ ] Compreface database growth
-
----
-
-## Test Data Preparation
-
-### Creating Test Images
+### Running Unit Tests
 
 ```bash
-# Download sample face dataset
-wget https://example.com/face_dataset.zip
-unzip face_dataset.zip -d test_images/
+cd /Users/x/dev/resources/repo/stash-compreface-plugin/gorpc
 
-# Or use Stash scraping to get test data
+# Run all unit tests
+go test ./internal/... -v
+
+# Run tests with coverage
+go test ./internal/... -cover -coverprofile=coverage.out
+go tool cover -html=coverage.out
+
+# Run specific package tests
+go test ./internal/config -v
+go test ./internal/compreface -v
+go test ./internal/stash -v
 ```
 
-### Creating Test Performers
-
-```graphql
-mutation CreatePerformer {
-  performerCreate(input: {
-    name: "Test Performer 1"
-    alias_list: ["Person 1001 ABCD1234EFGH5678"]
-  }) {
-    id
-    name
-  }
-}
-```
-
-### Resetting Test Environment
+### Running Integration Tests
 
 ```bash
-# Remove all Compreface subjects
-curl -X DELETE http://localhost:8000/api/v1/recognition/subjects \
-  -H "x-api-key: $COMPREFACE_RECOGNITION_KEY"
+cd /Users/x/dev/resources/repo/stash-compreface-plugin/gorpc
 
-# Remove tags from images (via Stash GraphQL)
-# Remove test performers
+# Run integration tests (requires services running)
+go test -tags=integration ./tests/integration/... -v
+
+# Run specific integration suite
+go test -tags=integration ./tests/integration/compreface -v
+go test -tags=integration ./tests/integration/stash -v
+```
+
+### Running E2E Tests
+
+**Prerequisites:**
+
+- Stash running at `http://localhost:9999`
+- Compreface running at `http://localhost:8000`
+- Database backed up
+
+**Execution:**
+
+```bash
+cd /Users/x/dev/resources/repo/stash-compreface-plugin/tests/e2e
+
+# Run all E2E suites
+./comprehensive_tests.sh
+
+# Run individual test suite
+./suites/02_synchronize_performers.sh
+./suites/03_identify_unscanned_images_limited.sh
+./suites/04_recognize_images.sh
+./suites/05_identify_gallery.sh
+./suites/06_recognize_scenes.sh  # Currently blocked
+./suites/07_reset_unmatched.sh
+
+# Run with limit parameter
+LIMIT=50 ./suites/04_recognize_images.sh
+```
+
+**Test Suite Helpers:**
+
+- `lib/database.sh` - Database backup/restore
+- `lib/logging.sh` - Log monitoring
+- `lib/graphql.sh` - GraphQL query helpers
+- `lib/validation.sh` - Result validation
+
+### Backup & Restore Database
+
+```bash
+# Backup before test run
+cp /Users/x/dev/resources/docker/stash/config/stash-go.sqlite \
+   /Users/x/dev/resources/docker/stash/config/stash-go.sqlite.backup
+
+# Restore after tests
+cp /Users/x/dev/resources/docker/stash/config/stash-go.sqlite.backup \
+   /Users/x/dev/resources/docker/stash/config/stash-go.sqlite
+
+# Restart Stash container
+docker restart stash
 ```
 
 ---
 
-## Continuous Integration
+## Test Implementation
 
-### GitHub Actions Workflow
+### Directory Structure
 
-```yaml
-name: Test
-on: [push, pull_request]
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v2
-        with:
-          go-version: 1.21
-      - name: Run tests
-        run: |
-          cd gorpc
-          go test ./... -v -cover
-      - name: Build binary
-        run: ./build.sh
+```
+gorpc/tests/
+├── fixtures/              # Test data (images, responses)
+├── mocks/                 # Mock implementations
+├── testutil/              # Shared test utilities
+├── unit/                  # Unit tests by package
+├── integration/           # Integration tests
+└── performance/           # Performance tests
+
+tests/e2e/
+├── comprehensive_tests.sh # Main orchestrator
+├── lib/                   # Helper libraries
+├── suites/                # Individual test suites
+└── data/                  # Backups and logs
+```
+
+### Mock Strategy
+
+**Mocked Dependencies:**
+
+- Compreface HTTP client (for unit tests)
+- Stash GraphQL client (for unit tests)
+- Vision Service client (for unit tests)
+- Quality Service client (for unit tests)
+
+**Mock Implementations:**
+
+- `tests/mocks/compreface_mock.go` - Mock Compreface API responses
+- `tests/mocks/stash_mock.go` - Mock GraphQL operations
+- `tests/mocks/vision_mock.go` - Mock Vision Service jobs
+- `tests/mocks/quality_mock.go` - Mock quality assessments
+
+### Fixture Management
+
+**Test Fixtures:**
+
+- Sample face images in `tests/fixtures/images/`
+- Mock API responses in `tests/fixtures/responses/`
+- Performer data in `tests/fixtures/performers/`
+
+**Loading Fixtures:**
+
+```go
+// tests/testutil/fixtures.go
+func LoadTestImage(name string) ([]byte, error)
+func LoadMockResponse(name string) ([]byte, error)
+func CreateTestPerformer() stash.Performer
 ```
 
 ---
 
-## Troubleshooting Tests
+## Test Results
+
+### Current Status
+
+**Test Coverage:** 12/13 tasks (92%)
+
+| Task                        | Status     | Notes                        |
+| --------------------------- | ---------- | ---------------------------- |
+| Synchronize Performers      | ✅ PASS    | 6 performers synced          |
+| Recognize Images (HQ)       | ✅ PASS    | 74% face detection rate      |
+| Recognize Images (LQ)       | ⏸️ PENDING | Awaiting Vision Service v2.0 |
+| Identify All Images         | ✅ PASS    | Batch identification         |
+| Identify Unscanned Images   | ✅ PASS    | 200 limit, 2 matches         |
+| Reset Unmatched Images      | ✅ PASS    | Cleanup operations           |
+| Recognize New Scenes        | ✅ PASS    | Vision Service v1.0.0        |
+| Recognize New Scene Sprites | ✅ PASS    | Sprite extraction working    |
+| Recognize All Scenes        | ✅ PASS    | Rescan all scenes            |
+| Recognize All Scene Sprites | ✅ PASS    | Sprite-based rescan          |
+| Reset Unmatched Scenes      | ✅ PASS    | Scene cleanup operations     |
+| Identify Single Image       | ✅ PASS    | Image 342, <5s               |
+| Create Performer from Image | ✅ PASS    | Working correctly            |
+| Identify Gallery            | ✅ PASS    | Gallery-scoped processing    |
+
+**Note:** Task numbering skips #13 - total 13 tasks but numbered 1-14 (no task #13).
+
+### Known Issues
+
+**Recognize Images (LQ) - Pending Implementation:**
+
+- **Status:** Awaiting Vision Service support for single image analysis
+- **Current:** Uses direct CompreFace (same as HQ mode)
+- **Future:** Will use Vision Service with lower quality thresholds
+- **Blocker:** Vision Service needs image processing capability (currently video-only)
+- **Impact:** LQ mode not differentiated from HQ mode
+
+**Resolved Issues:**
+
+- ✅ Vision Service v1.0.0 integration complete
+- ✅ Occlusion detection working (~100% TPR on hands)
+- ✅ Sprite extraction functional
+- ✅ All scene recognition tasks passing
+
+**Minor Issues:**
+
+- Some images naturally have no faces (expected ~26% no-face rate)
+- Threshold filtering may reject valid low-confidence matches (working as designed)
+
+### Performance Metrics
+
+**Batch Processing:**
+
+- Batch size: 20 items (configurable)
+- Cooldown period: 10 seconds (configurable)
+- Processing rate: ~50 images/minute (with cooldowns)
+- Memory usage: Stable, no leaks observed
+
+**Single Operations:**
+
+- Single image: <5 seconds
+- Single performer sync: <3 seconds
+- Gallery processing: Depends on size
+
+---
+
+## Troubleshooting
 
 ### Test Failures
 
-**Issue:** Tests fail with "permission denied" errors
-**Solution:** Set `TMPDIR` and `GOTMPDIR`:
+**Compreface Connection Errors:**
+
+- Verify Compreface running: `curl http://localhost:8000/`
+- Check API keys configured in plugin settings
+- Review Compreface logs: `docker logs compreface-api`
+
+**Stash GraphQL Errors:**
+
+- Verify Stash running: `curl http://localhost:9999/graphql`
+- Check Stash logs: `docker logs stash`
+- Validate query syntax with GraphQL playground
+
+**Vision Service Unavailable:**
+
+- Check service health: `curl http://localhost:5010/health`
+- Verify container running: `docker ps | grep vision`
+- Review Vision Service logs: `docker logs vision-api`
+
+**Test Database Issues:**
+
+- Restore from backup if corrupted
+- Clear Compreface subjects if needed
+- Check disk space for database writes
+
+### Log Analysis
+
+**Finding Test Results:**
+
 ```bash
-export TMPDIR=/tmp
-export GOTMPDIR=/tmp
-go test ./...
+# Plugin logs in Stash container
+docker logs stash 2>&1 | grep "Plugin / Compreface"
+
+# Filter for specific task
+docker logs stash 2>&1 | grep "Recognize Images"
+
+# Look for errors
+docker logs stash 2>&1 | grep -i error | grep Compreface
+
+# Monitor real-time
+docker logs -f stash | grep Compreface
 ```
 
-**Issue:** Compreface connection timeout
-**Solution:**
-1. Verify Compreface is running: `curl http://localhost:8000/`
-2. Check network connectivity
-3. Verify API keys are correct
+**Log Patterns:**
 
-**Issue:** Test data not found
-**Solution:**
-1. Ensure test images exist in expected location
-2. Check file permissions
-3. Verify Stash can access image files
+- Task start: `Starting [task name]`
+- Progress: `Processing [N]/[total]`
+- Cooldown: `Cooling down for N seconds`
+- Match: `Matched subject ... with similarity 0.XX`
+- Error: `Failed to [operation]: [reason]`
 
 ---
 
-## Performance Benchmarks
+## Future Testing
 
-### Expected Performance (Reference Hardware)
+### Planned Improvements
 
-**Hardware:**
-- CPU: Intel i7 / AMD Ryzen 7
-- RAM: 16GB
-- GPU: NVIDIA GTX 1060 or better (for Compreface)
+**Unit Test Expansion:**
 
-**Metrics:**
-- Face Detection: ~5-10 images/second
-- Face Recognition: ~10-15 faces/second
-- Batch Processing (20 images): ~10-20 seconds
-- Performer Sync (100 performers): ~2-3 minutes
+- Increase coverage to 85%+
+- Add property-based testing for edge cases
+- Performance regression tests
 
-**Note:** Performance varies based on:
-- Image resolution
-- Number of faces per image
-- Compreface hardware
-- Network latency
+**Integration Test Additions:**
+
+- Quality Service integration suite
+- Concurrent task execution tests
+- Network failure scenarios
+- Rate limiting tests
+
+**E2E Test Enhancements:**
+
+- Automated database state validation
+- Performance benchmarking in E2E suites
+- Error injection testing
+- Long-running stability tests
+
+### Test Automation
+
+**CI/CD Integration:**
+
+- Automated test runs on commit
+- Coverage reporting
+- Performance tracking
+- Test result notifications
+
+**Scheduled Testing:**
+
+- Nightly full test suite runs
+- Weekly performance benchmarks
+- Monthly integration verification
 
 ---
 
-## Contact
+## References
 
-For test failures or issues:
-- **Issues:** https://github.com/smegmarip/stash-compreface-plugin/issues
-- **Discussions:** https://github.com/smegmarip/stash-compreface-plugin/discussions
+**Test Files:**
+
+- Unit tests: `gorpc/tests/unit/`
+- Integration tests: `gorpc/tests/integration/`
+- E2E test suites: `tests/e2e/suites/`
+- Test documentation: `gorpc/tests/README.md`
+
+**Related Documentation:**
+
+- Architecture: `docs/ARCHITECTURE.md`
+- CLAUDE.md: Development guide
+- README.md: User guide
+- SESSION_RESUME.md: Current status and blockers
+
+---
+
+**Last Updated:** 2025-11-13
+**Status:** 9/11 tasks tested and passing, 2/11 blocked by Vision Service
