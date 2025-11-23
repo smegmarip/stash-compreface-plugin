@@ -33,7 +33,7 @@ export STASH_URL="http://localhost:9999"
 # ============================================================================
 # Vision Service Configuration
 # ============================================================================
-# Note: Vision API runs on port 5010 (mapped from container port 5000)
+# Note: Vision API runs on port 5010 (mapped from container port 5010)
 export VISION_SERVICE_URL="http://localhost:5010"
 
 # ============================================================================

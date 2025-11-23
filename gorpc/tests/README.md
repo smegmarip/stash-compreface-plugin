@@ -13,6 +13,7 @@ This testing harness provides comprehensive test coverage for the refactored Sta
 ## Quick Start
 
 ### Run All Tests
+
 ```bash
 cd gorpc
 export TMPDIR=/tmp GOTMPDIR=/tmp
@@ -20,6 +21,7 @@ go test ./tests/... -v
 ```
 
 ### Run Specific Test Suites
+
 ```bash
 # Unit tests only
 go test ./tests/unit/... -v
@@ -35,6 +37,7 @@ go test ./tests/performance/... -v -bench=.
 ```
 
 ### Run with Coverage
+
 ```bash
 go test ./tests/unit/... -cover -coverprofile=coverage.out
 go tool cover -html=coverage.out
@@ -64,17 +67,18 @@ tests/
 
 ### Core Packages (Target: >80%)
 
-| Package | Lines | Unit Tests | Integration | E2E | Priority |
-|---------|-------|------------|-------------|-----|----------|
-| internal/rpc | 869 | ✅ Required | ✅ Required | ✅ Required | **HIGH** |
-| internal/compreface | 573 | ✅ Required | ✅ Required | ⚠️ Optional | **HIGH** |
-| internal/stash | 709 | ✅ Required | ✅ Required | ⚠️ Optional | **HIGH** |
-| internal/vision | 412 | ✅ Required | ✅ Required | ⚠️ Optional | MEDIUM |
-| internal/quality | 1,416 | ✅ Required | ⚠️ Optional | ⚠️ Optional | MEDIUM |
-| internal/config | 226 | ✅ Required | ⚠️ Optional | ⚠️ Optional | HIGH |
-| pkg/utils | ~200 | ✅ Required | ❌ Not Needed | ❌ Not Needed | MEDIUM |
+| Package             | Lines | Unit Tests  | Integration   | E2E           | Priority |
+| ------------------- | ----- | ----------- | ------------- | ------------- | -------- |
+| internal/rpc        | 869   | ✅ Required | ✅ Required   | ✅ Required   | **HIGH** |
+| internal/compreface | 573   | ✅ Required | ✅ Required   | ⚠️ Optional   | **HIGH** |
+| internal/stash      | 709   | ✅ Required | ✅ Required   | ⚠️ Optional   | **HIGH** |
+| internal/vision     | 412   | ✅ Required | ✅ Required   | ⚠️ Optional   | MEDIUM   |
+| internal/quality    | 1,416 | ✅ Required | ⚠️ Optional   | ⚠️ Optional   | MEDIUM   |
+| internal/config     | 226   | ✅ Required | ⚠️ Optional   | ⚠️ Optional   | HIGH     |
+| pkg/utils           | ~200  | ✅ Required | ❌ Not Needed | ❌ Not Needed | MEDIUM   |
 
 **Legend**:
+
 - ✅ Required - Must implement
 - ⚠️ Optional - Nice to have
 - ❌ Not Needed - Not applicable
@@ -88,12 +92,14 @@ tests/
 **Purpose**: Test individual functions and methods in isolation
 
 **Characteristics**:
+
 - No external dependencies
 - Uses mocks for all I/O
 - Fast execution (<1s per package)
 - Can run without services
 
 **Example**:
+
 ```go
 func TestCreateSubjectName(t *testing.T) {
     name := compreface.CreateSubjectName("12345")
@@ -118,12 +124,14 @@ func TestCreateSubjectName(t *testing.T) {
 **Purpose**: Test interactions with external services
 
 **Requirements**:
+
 - Running Compreface (localhost:8000)
 - Running Stash (localhost:9999)
-- Running Vision Service (localhost:5000) - optional
+- Running Vision Service (localhost:5010) - optional
 - Running Quality Service (localhost:6001) - optional
 
 **Example**:
+
 ```go
 // +build integration
 
@@ -133,7 +141,7 @@ func TestLiveDetection_SingleFace(t *testing.T) {
         os.Getenv("COMPREFACE_RECOGNITION_KEY"),
         os.Getenv("COMPREFACE_DETECTION_KEY"),
         "",
-        0.89,
+        0.81,
     )
 
     result, err := client.DetectFaces("fixtures/images/single_face/test1.jpg")
@@ -153,11 +161,13 @@ func TestLiveDetection_SingleFace(t *testing.T) {
 **Purpose**: Test complete workflows from start to finish
 
 **Requirements**:
+
 - All services running
 - Test data prepared
 - Clean initial state
 
 **Example**:
+
 ```go
 // +build e2e
 
@@ -192,12 +202,14 @@ func TestPerformerSyncWorkflow(t *testing.T) {
 **Purpose**: Validate performance characteristics
 
 **Metrics**:
+
 - Batch processing speed
 - Memory stability
 - Cooldown effectiveness
 - Concurrent request handling
 
 **Example**:
+
 ```go
 func BenchmarkBatchProcessing(b *testing.B) {
     service := setupTestService()
@@ -231,6 +243,7 @@ func TestMemoryStability(t *testing.T) {
 **Purpose**: Verify error handling and recovery
 
 **Scenarios**:
+
 - Network failures
 - API errors (4xx, 5xx)
 - Invalid data
@@ -238,10 +251,11 @@ func TestMemoryStability(t *testing.T) {
 - Service unavailability
 
 **Example**:
+
 ```go
 func TestComprefaceUnavailable(t *testing.T) {
     // Use invalid URL
-    client := compreface.NewClient("http://localhost:99999", "", "", "", 0.89)
+    client := compreface.NewClient("http://localhost:99999", "", "", "", 0.81)
 
     _, err := client.DetectFaces("test.jpg")
 
@@ -257,6 +271,7 @@ func TestComprefaceUnavailable(t *testing.T) {
 ### Mock Implementations (`tests/mocks/`)
 
 Generated mocks for all interfaces:
+
 ```go
 // CompreFaceClient mock
 type MockComprefaceClient struct {
@@ -272,6 +287,7 @@ func (m *MockComprefaceClient) DetectFaces(path string) (*compreface.DetectionRe
 ### Test Helpers (`tests/testutil/`)
 
 Shared utilities for all tests:
+
 ```go
 // Setup test environment
 func SetupTestEnv(t *testing.T) (*TestEnv, func())
@@ -289,6 +305,7 @@ func CreateTestImage(width, height int, numFaces int) []byte
 ### Fixtures (`tests/fixtures/`)
 
 Test data organized by type:
+
 ```
 fixtures/
 ├── images/
@@ -370,6 +387,7 @@ go tool cover -html=coverage.out
 ### CI/CD Pipeline
 
 Tests run automatically on:
+
 - Push to main branch
 - Pull requests
 - Manual workflow dispatch
@@ -502,6 +520,7 @@ func TestExample(t *testing.T) {
 ### Common Issues
 
 **Issue**: Tests fail with "permission denied"
+
 ```bash
 # Solution: Set temp directories
 export TMPDIR=/tmp
@@ -509,6 +528,7 @@ export GOTMPDIR=/tmp
 ```
 
 **Issue**: Integration tests can't connect to services
+
 ```bash
 # Solution: Check services are running
 docker-compose -f tests/docker-compose.yml ps
@@ -516,12 +536,14 @@ curl http://localhost:8000/  # Check Compreface
 ```
 
 **Issue**: E2E tests leave dirty data
+
 ```bash
 # Solution: Run cleanup script
 go run tests/tools/reset_test_env.go
 ```
 
 **Issue**: Tests timeout
+
 ```bash
 # Solution: Increase timeout
 go test -timeout 10m ./tests/...
@@ -540,15 +562,16 @@ go test -timeout 10m ./tests/...
 
 ## Status
 
-| Category | Status | Coverage | Tests |
-|----------|--------|----------|-------|
-| Unit Tests | ⏳ Planned | Target: 80% | ~150 tests |
-| Integration Tests | ⏳ Planned | Target: 100% | ~30 tests |
-| E2E Tests | ⏳ Planned | All workflows | ~10 tests |
-| Performance Tests | ⏳ Planned | Key metrics | ~5 tests |
-| Error Scenarios | ⏳ Planned | All modes | ~10 tests |
+| Category          | Status     | Coverage      | Tests      |
+| ----------------- | ---------- | ------------- | ---------- |
+| Unit Tests        | ⏳ Planned | Target: 80%   | ~150 tests |
+| Integration Tests | ⏳ Planned | Target: 100%  | ~30 tests  |
+| E2E Tests         | ⏳ Planned | All workflows | ~10 tests  |
+| Performance Tests | ⏳ Planned | Key metrics   | ~5 tests   |
+| Error Scenarios   | ⏳ Planned | All modes     | ~10 tests  |
 
 **Legend**:
+
 - ✅ Complete
 - 🔄 In Progress
 - ⏳ Planned
@@ -557,6 +580,7 @@ go test -timeout 10m ./tests/...
 ---
 
 **Next Steps**:
+
 1. Review and approve TEST_PLAN.md
 2. Create directory structure
 3. Generate mocks

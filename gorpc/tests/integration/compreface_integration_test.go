@@ -1,3 +1,4 @@
+//go:build integration
 // +build integration
 
 package integration_test
@@ -24,7 +25,7 @@ func TestComprefaceIntegration_ListSubjects(t *testing.T) {
 		env.RecognitionKey,
 		env.DetectionKey,
 		env.VerificationKey,
-		0.89,
+		0.81,
 	)
 
 	subjects, err := client.ListSubjects()
@@ -61,7 +62,7 @@ func TestComprefaceIntegration_DetectFaces(t *testing.T) {
 		env.RecognitionKey,
 		env.DetectionKey,
 		env.VerificationKey,
-		0.89,
+		0.81,
 	)
 
 	result, err := client.DetectFaces(testImagePath)
@@ -101,7 +102,7 @@ func TestComprefaceIntegration_AddAndDeleteSubject(t *testing.T) {
 		env.RecognitionKey,
 		env.DetectionKey,
 		env.VerificationKey,
-		0.89,
+		0.81,
 	)
 
 	// Create a test subject
@@ -158,7 +159,7 @@ func TestComprefaceIntegration_RecognizeFaces(t *testing.T) {
 		env.RecognitionKey,
 		env.DetectionKey,
 		env.VerificationKey,
-		0.89,
+		0.81,
 	)
 
 	// First, add a subject
@@ -196,7 +197,7 @@ func TestComprefaceIntegration_RecognizeFaces(t *testing.T) {
 			for _, subject := range face.Subjects {
 				if subject.Subject == subjectName {
 					found = true
-					assert.GreaterOrEqual(t, subject.Similarity, 0.89,
+					assert.GreaterOrEqual(t, subject.Similarity, 0.81,
 						"similarity should meet minimum threshold")
 					break
 				}

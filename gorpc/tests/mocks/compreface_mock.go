@@ -53,25 +53,16 @@ func (m *MockComprefaceClient) DeleteSubject(subjectName string) error {
 }
 
 // ListFaces mocks listing faces for a subject
-func (m *MockComprefaceClient) ListFaces(subjectName string) ([]compreface.Face, error) {
+func (m *MockComprefaceClient) ListFaces(subjectName string) (*compreface.FaceListResponse, error) {
 	args := m.Called(subjectName)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).([]compreface.Face), args.Error(1)
+	return args.Get(0).(*compreface.FaceListResponse), args.Error(1)
 }
 
 // DeleteFace mocks face deletion
 func (m *MockComprefaceClient) DeleteFace(imageID string) error {
 	args := m.Called(imageID)
 	return args.Error(0)
-}
-
-// VerifyFaces mocks face verification
-func (m *MockComprefaceClient) VerifyFaces(sourcePath, targetPath string) (*compreface.VerificationResponse, error) {
-	args := m.Called(sourcePath, targetPath)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*compreface.VerificationResponse), args.Error(1)
 }
