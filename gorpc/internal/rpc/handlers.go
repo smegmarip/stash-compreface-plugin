@@ -1,11 +1,12 @@
 package rpc
 
 import (
+	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/stashapp/stash/pkg/plugin/common"
 	"github.com/stashapp/stash/pkg/plugin/common/log"
-	"github.com/stashapp/stash/pkg/plugin/util"
 
 	"github.com/smegmarip/stash-compreface-plugin/internal/compreface"
 	"github.com/smegmarip/stash-compreface-plugin/internal/config"
@@ -16,7 +17,7 @@ import (
 func (s *Service) Run(input common.PluginInput, output *common.PluginOutput) error {
 	// Initialize GraphQL client and tag cache
 	s.serverConnection = input.ServerConnection
-	s.graphqlClient = util.NewClient(input.ServerConnection)
+	s.graphqlClient = stash.Client(input.ServerConnection)
 	s.tagCache = stash.NewTagCache()
 
 	// Load plugin configuration
@@ -40,69 +41,142 @@ func (s *Service) Run(input common.PluginInput, output *common.PluginOutput) err
 		cfg.ComprefaceURL, cfg.MaxBatchSize, cfg.CooldownSeconds)
 
 	mode := input.Args.String("mode")
+
+	// Parse limit parameter (Stash sends integers as float64 in JSON)
+	limit := 0
+	argsMap := input.Args.ToMap()
+	if limitVal, ok := argsMap["limit"]; ok {
+		switch v := limitVal.(type) {
+		case float64:
+			limit = int(v)
+		case int:
+			limit = v
+		case string:
+			// Try parsing string as int
+			if val, err := strconv.Atoi(v); err == nil {
+				limit = val
+			}
+		}
+	}
+	log.Debugf("Mode: %s, Limit: %d", mode, limit)
+
 	var outputStr string = "Unknown mode"
 
 	switch mode {
 	case "synchronizePerformers":
-		log.Info("Starting performer synchronization")
-		err = s.synchronizePerformers()
+		log.Infof("Starting performer synchronization (limit=%d)", limit)
+		err = s.synchronizePerformers(limit)
 		outputStr = "Performer synchronization completed"
 
 	case "recognizeImagesHQ":
-		log.Info("Starting high-quality image recognition")
-		err = s.recognizeImages(false) // lowQuality=false
+		log.Infof("Starting high-quality image recognition (limit=%d)", limit)
+		err = s.recognizeImages(false, limit) // lowQuality=false
 		outputStr = "High-quality image recognition completed"
 
 	case "recognizeImagesLQ":
-		log.Info("Starting low-quality image recognition")
-		err = s.recognizeImages(true) // lowQuality=true
+		log.Infof("Starting low-quality image recognition (limit=%d)", limit)
+		err = s.recognizeImages(true, limit) // lowQuality=true
 		outputStr = "Low-quality image recognition completed"
 
 	case "identifyImagesAll":
-		log.Info("Starting image identification (all)")
-		err = s.identifyImages(false) // newOnly=false
+		log.Infof("Starting image identification (all, limit=%d)", limit)
+		err = s.identifyImages(false, limit) // newOnly=false
 		outputStr = "Image identification completed"
 
 	case "identifyImagesNew":
-		log.Info("Starting image identification (new only)")
-		err = s.identifyImages(true) // newOnly=true
+		log.Infof("Starting image identification (new only, limit=%d)", limit)
+		err = s.identifyImages(true, limit) // newOnly=true
 		outputStr = "New image identification completed"
 
-	case "resetUnmatched":
-		log.Info("Resetting unmatched images")
-		err = s.resetUnmatchedImages()
+	case "resetUnmatchedImages":
+		log.Infof("Resetting unmatched images (limit=%d)", limit)
+		err = s.resetUnmatchedImages(limit)
 		outputStr = "Unmatched images reset"
 
-	case "recognizeScenes":
-		log.Info("Starting scene recognition")
-		err = s.recognizeScenes(false) // useSprites=false
+	case "recognizeNewScenes":
+		log.Infof("Starting scene recognition (limit=%d)", limit)
+		err = s.recognizeScenes(false, false, limit) // useSprites=false scanPartial=false
 		outputStr = "Scene recognition completed"
 
-	case "recognizeSceneSprites":
-		log.Info("Starting scene sprite recognition")
-		err = s.recognizeScenes(true) // useSprites=true
+	case "recognizeAllScenes":
+		log.Infof("Starting scene recognition (limit=%d)", limit)
+		err = s.recognizeScenes(false, true, limit) // useSprites=false scanPartial=true
+		outputStr = "Scene recognition completed"
+
+	case "recognizeNewSceneSprites":
+		log.Infof("Starting scene sprite recognition (limit=%d)", limit)
+		err = s.recognizeScenes(true, false, limit) // useSprites=true scanPartial=false
+		outputStr = "Scene sprite recognition completed"
+
+	case "recognizeAllSceneSprites":
+		log.Infof("Starting scene sprite recognition (limit=%d)", limit)
+		err = s.recognizeScenes(true, true, limit) // useSprites=true scanPartial=true
 		outputStr = "Scene sprite recognition completed"
 
 	case "identifyImage":
-		imageID := input.Args.String("imageId")
+		// Parse imageId (Stash sends integers as float64 in JSON)
+		imageID := ""
+		if imageVal, ok := argsMap["imageId"]; ok {
+			switch v := imageVal.(type) {
+			case float64:
+				imageID = fmt.Sprintf("%.0f", v)
+			case int:
+				imageID = fmt.Sprintf("%d", v)
+			case string:
+				imageID = v
+			}
+		}
+		var _res *[]FaceIdentity
 		createPerformer := input.Args.Bool("createPerformer")
 		log.Infof("Identifying image: %s (createPerformer=%v)", imageID, createPerformer)
-		err = s.identifyImage(imageID, createPerformer, nil)
+		_res, err = s.identifyImage(imageID, createPerformer, nil)
+		response := IdentifyImageResponse{Result: _res}
+		res, _err := json.Marshal(response)
+		if _err == nil {
+			log.Infof("identifyImage=%s", string(res))
+		}
 		outputStr = "Image identification completed"
 
 	case "createPerformerFromImage":
-		imageID := input.Args.String("imageId")
+		// Parse imageId (Stash sends integers as float64 in JSON)
+		imageID := ""
+		if imageVal, ok := argsMap["imageId"]; ok {
+			switch v := imageVal.(type) {
+			case float64:
+				imageID = fmt.Sprintf("%.0f", v)
+			case int:
+				imageID = fmt.Sprintf("%d", v)
+			case string:
+				imageID = v
+			}
+		}
 		faceIndex := input.Args.Int("faceIndex")
 		log.Infof("Creating performer from image: %s (faceIndex=%d)", imageID, faceIndex)
-		err = s.identifyImage(imageID, true, &faceIndex)
+		_, err = s.identifyImage(imageID, true, &faceIndex)
 		outputStr = "Performer created from image"
 
 	case "identifyGallery":
-		galleryID := input.Args.String("galleryId")
+		// Parse galleryId (Stash sends integers as float64 in JSON)
+		galleryID := ""
+		if galleryVal, ok := argsMap["galleryId"]; ok {
+			switch v := galleryVal.(type) {
+			case float64:
+				galleryID = fmt.Sprintf("%.0f", v)
+			case int:
+				galleryID = fmt.Sprintf("%d", v)
+			case string:
+				galleryID = v
+			}
+		}
 		createPerformer := input.Args.Bool("createPerformer")
-		log.Infof("Identifying gallery: %s (createPerformer=%v)", galleryID, createPerformer)
-		err = s.identifyGallery(galleryID, createPerformer)
+		log.Infof("Identifying gallery: %s (createPerformer=%v, limit=%d)", galleryID, createPerformer, limit)
+		err = s.identifyGallery(galleryID, createPerformer, limit)
 		outputStr = "Gallery identification completed"
+
+	case "resetUnmatchedScenes":
+		log.Infof("Resetting unmatched scenes (limit=%d)", limit)
+		err = s.resetUnmatchedScenes(limit)
+		outputStr = "Unmatched scenes reset"
 
 	default:
 		err = fmt.Errorf("unknown mode: %s", mode)

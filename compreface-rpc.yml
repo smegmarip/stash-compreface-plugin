@@ -32,13 +32,21 @@ settings:
     description: Maximum items to process per batch (default 20, prevents hardware stress)
     type: NUMBER
   minSimilarity:
-    displayName: Minimum Similarity Threshold
-    description: Minimum face similarity score 0.0-1.0 (default 0.89)
-    type: NUMBER
+    displayName: Minimum Compreface Similarity Threshold
+    description: Minimum compreface face similarity score 0.0-1.0 (default 0.81)
+    type: STRING
   minFaceSize:
     displayName: Minimum Face Size
     description: Minimum face dimensions in pixels (default 64)
     type: NUMBER
+  minSceneConfidenceScore:
+    displayName: Minimum Confidence Score (Scenes)
+    description: Minimum face confidence score for creating new subjects from scenes (default 0.7, range 0.0-1.0)
+    type: STRING
+  minSceneQualityScore:
+    displayName: Minimum Quality Score (Scenes)
+    description: Minimum face quality score for creating new subjects from scenes (default 0.65, range 0.0-1.0)
+    type: STRING
   scannedTagName:
     displayName: Scanned Tag Name
     description: Tag to mark scanned images (default "Compreface Scanned")
@@ -49,11 +57,15 @@ settings:
     type: STRING
   visionServiceUrl:
     displayName: Vision Service URL
-    description: URL of the stash-auto-vision service for video face recognition (leave empty to disable, default http://stash-auto-vision:5000)
+    description: URL of the stash-auto-vision service for video face recognition (leave empty to disable, default http://vision-api:5010)
     type: STRING
   qualityServiceUrl:
     displayName: Quality Service URL
     description: URL of the stash-face-quality service for enhanced face quality assessment (leave empty to disable, default http://stash-face-quality:6001)
+    type: STRING
+  stashHostUrl:
+    displayName: Stash Host URL
+    description: URL of the Stash host (leave empty for auto-detection)
     type: STRING
 
 tasks:
@@ -61,41 +73,31 @@ tasks:
     description: Synchronize existing performers with Compreface subjects
     defaultArgs:
       mode: synchronizePerformers
+      limit: 0
 
   - name: Recognize Images (High Quality)
     description: Detect and group faces in high-quality images
     defaultArgs:
       mode: recognizeImagesHQ
+      limit: 0
 
   - name: Recognize Images (Low Quality)
     description: Detect and group faces in low-quality images
     defaultArgs:
       mode: recognizeImagesLQ
+      limit: 0
 
   - name: Identify All Images
     description: Match faces in all images with existing performers
     defaultArgs:
       mode: identifyImagesAll
+      limit: 0
 
   - name: Identify Unscanned Images
     description: Match faces in new images with existing performers
     defaultArgs:
       mode: identifyImagesNew
-
-  - name: Reset Unmatched Images
-    description: Remove scan tags from unmatched images
-    defaultArgs:
-      mode: resetUnmatched
-
-  - name: Recognize Scenes
-    description: Extract and recognize faces from video scenes
-    defaultArgs:
-      mode: recognizeScenes
-
-  - name: Recognize Scene Sprites
-    description: Extract and recognize faces from scene sprite sheets
-    defaultArgs:
-      mode: recognizeSceneSprites
+      limit: 0
 
   - name: Identify Single Image
     description: Identify faces in a specific image
@@ -117,3 +119,40 @@ tasks:
       mode: identifyGallery
       galleryId: null
       createPerformer: false
+      limit: 0
+
+  - name: Reset Unmatched Images
+    description: Remove scan tags from unmatched images
+    defaultArgs:
+      mode: resetUnmatchedImages
+      limit: 0
+
+  - name: Recognize New Scenes
+    description: Extract and recognize faces from unscanned video scenes
+    defaultArgs:
+      mode: recognizeNewScenes
+      limit: 0
+
+  - name: Recognize New Scene Sprites
+    description: Extract and recognize faces from unscanned scene sprite sheets
+    defaultArgs:
+      mode: recognizeNewSceneSprites
+      limit: 0
+
+  - name: Recognize All Scenes
+    description: Extract and recognize faces from all video scenes
+    defaultArgs:
+      mode: recognizeAllScenes
+      limit: 0
+
+  - name: Recognize All Scene Sprites
+    description: Extract and recognize faces from all scene sprite sheets
+    defaultArgs:
+      mode: recognizeAllSceneSprites
+      limit: 0
+
+  - name: Reset Unmatched Scenes
+    description: Remove scan tags from unmatched scenes
+    defaultArgs:
+      mode: resetUnmatchedScenes
+      limit: 0
