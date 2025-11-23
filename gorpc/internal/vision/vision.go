@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/stashapp/stash/pkg/plugin/common/log"
@@ -18,7 +19,7 @@ import (
 // for high-accuracy video face recognition using InsightFace.
 //
 // Service Architecture:
-// - FastAPI web service (port 5000)
+// - FastAPI web service (port 5010)
 // - Celery + Redis for async job processing
 // - InsightFace RetinaFace detection + ArcFace embeddings (512-D)
 // - FFmpeg frame extraction with adaptive sampling
@@ -31,152 +32,20 @@ import (
 //
 // ============================================================================
 
-// VisionServiceClient handles communication with Vision Service
-type VisionServiceClient struct {
-	BaseURL    string
-	HTTPClient *http.Client
-}
+// ============================================================================
+// API Methods
+// ============================================================================
 
 // NewVisionServiceClient creates a new client
 func NewVisionServiceClient(baseURL string) *VisionServiceClient {
 	return &VisionServiceClient{
-		BaseURL: baseURL,
+		BaseURL:        baseURL,
+		FrameServerURL: "http://vision-frame-server:5001", // Internal container address
 		HTTPClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 120 * time.Second,
 		},
 	}
 }
-
-// ============================================================================
-// Request/Response Types
-// ============================================================================
-
-// AnalyzeRequest represents job submission parameters (matching Vision API schema)
-type AnalyzeRequest struct {
-	VideoPath      string  `json:"video_path"`
-	SceneID        string  `json:"scene_id"`
-	JobID          string  `json:"job_id,omitempty"`
-	ProcessingMode string  `json:"processing_mode,omitempty"` // sequential or parallel
-	Modules        Modules `json:"modules"`
-}
-
-// Modules configures which analysis modules to enable
-type Modules struct {
-	Faces FacesModule `json:"faces"`
-}
-
-// FacesModule configuration
-type FacesModule struct {
-	Enabled    bool               `json:"enabled"`
-	Parameters FacesParameters    `json:"parameters,omitempty"`
-}
-
-// FacesParameters configures face recognition behavior (matching openapi.yml)
-type FacesParameters struct {
-	MinConfidence                float64 `json:"min_confidence,omitempty"`                // default: 0.9
-	MaxFaces                     int     `json:"max_faces,omitempty"`                     // default: 50
-	SamplingInterval             float64 `json:"sampling_interval,omitempty"`             // default: 2.0
-	UseSprites                   bool    `json:"use_sprites,omitempty"`                   // default: false
-	SpriteVTTURL                 string  `json:"sprite_vtt_url,omitempty"`
-	SpriteImageURL               string  `json:"sprite_image_url,omitempty"`
-	EnableDeduplication          bool    `json:"enable_deduplication,omitempty"`          // default: true
-	EmbeddingSimilarityThreshold float64 `json:"embedding_similarity_threshold,omitempty"` // default: 0.6
-	DetectDemographics           bool    `json:"detect_demographics,omitempty"`           // default: true
-	CacheDuration                int     `json:"cache_duration,omitempty"`                // default: 3600
-}
-
-// JobResponse represents job submission response
-type JobResponse struct {
-	JobID     string    `json:"job_id"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-// JobStatus represents job status and progress
-type JobStatus struct {
-	JobID       string                 `json:"job_id"`
-	Status      string                 `json:"status"`
-	Progress    float64                `json:"progress"`
-	Stage       string                 `json:"stage,omitempty"`
-	Message     string                 `json:"message,omitempty"`
-	Error       string                 `json:"error,omitempty"`
-	Summary     map[string]interface{} `json:"result_summary,omitempty"`
-	CreatedAt   time.Time              `json:"created_at"`
-	StartedAt   *time.Time             `json:"started_at,omitempty"`
-	CompletedAt *time.Time             `json:"completed_at,omitempty"`
-	FailedAt    *time.Time             `json:"failed_at,omitempty"`
-}
-
-// AnalyzeResults represents the full analysis results from Vision API
-type AnalyzeResults struct {
-	JobID    string         `json:"job_id"`
-	SceneID  string         `json:"scene_id"`
-	Status   string         `json:"status"`
-	Faces    *FacesResults  `json:"faces,omitempty"`    // Faces module results
-	Scenes   interface{}    `json:"scenes,omitempty"`   // Scenes module results (not used yet)
-	Semantics interface{}   `json:"semantics,omitempty"` // Semantics module results (Phase 2)
-	Objects  interface{}    `json:"objects,omitempty"`  // Objects module results (Phase 3)
-	Metadata interface{}    `json:"metadata,omitempty"` // Processing metadata
-}
-
-// FacesResults represents face analysis results from the Faces service
-type FacesResults struct {
-	JobID    string         `json:"job_id"`
-	SceneID  string         `json:"scene_id"`
-	Status   string         `json:"status"`
-	Faces    []VisionFace   `json:"faces"`
-	Metadata ResultMetadata `json:"metadata"`
-}
-
-// VisionFace represents a unique face cluster detected in video
-type VisionFace struct {
-	FaceID                  string             `json:"face_id"`
-	Embedding               []float64          `json:"embedding"` // 512-D ArcFace embedding
-	Demographics            *Demographics      `json:"demographics,omitempty"`
-	Detections              []VisionDetection  `json:"detections"`
-	RepresentativeDetection VisionDetection    `json:"representative_detection"`
-}
-
-// Demographics represents age, gender, emotion detection
-type Demographics struct {
-	Age     int    `json:"age"`
-	Gender  string `json:"gender"`  // "M" or "F"
-	Emotion string `json:"emotion"` // neutral, happy, sad, angry, surprise, disgust, fear
-}
-
-// VisionDetection represents a single face detection in a frame
-type VisionDetection struct {
-	FrameIndex   int                    `json:"frame_index"`
-	Timestamp    float64                `json:"timestamp"`
-	BBox         VisionBoundingBox      `json:"bbox"`
-	Confidence   float64                `json:"confidence"`
-	QualityScore float64                `json:"quality_score"`
-	Pose         string                 `json:"pose"`
-	Landmarks    map[string]interface{} `json:"landmarks,omitempty"`
-}
-
-// VisionBoundingBox represents face coordinates
-type VisionBoundingBox struct {
-	XMin int `json:"x_min"`
-	YMin int `json:"y_min"`
-	XMax int `json:"x_max"`
-	YMax int `json:"y_max"`
-}
-
-// ResultMetadata provides processing statistics
-type ResultMetadata struct {
-	TotalFrames           int     `json:"total_frames"`
-	FramesProcessed       int     `json:"frames_processed"`
-	UniqueFaces           int     `json:"unique_faces"`
-	TotalDetections       int     `json:"total_detections"`
-	ProcessingTimeSeconds float64 `json:"processing_time_seconds"`
-	Method                string  `json:"method"`
-	Model                 string  `json:"model"`
-}
-
-// ============================================================================
-// API Methods
-// ============================================================================
 
 // SubmitJob submits a face recognition job to the Vision Service
 func (c *VisionServiceClient) SubmitJob(req AnalyzeRequest) (*JobResponse, error) {
@@ -187,7 +56,7 @@ func (c *VisionServiceClient) SubmitJob(req AnalyzeRequest) (*JobResponse, error
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	log.Debugf("Submitting Vision Service job: scene_id=%s, video_path=%s", req.SceneID, req.VideoPath)
+	log.Debugf("Submitting Vision Service job to %s: scene_id=%s, source=%s", url, req.SceneID, req.Source)
 
 	resp, err := c.HTTPClient.Post(url, "application/json", bytes.NewBuffer(body))
 	if err != nil {
@@ -339,27 +208,16 @@ func (c *VisionServiceClient) HealthCheck() error {
 // Helper Methods
 // ============================================================================
 
-// BuildAnalyzeRequest creates a standard request with sensible defaults for face recognition
-func BuildAnalyzeRequest(videoPath, sceneID string, useSprites bool, spriteVTT, spriteImage string) AnalyzeRequest {
+// BuildAnalyzeRequest creates a standard request for face recognition
+func BuildAnalyzeRequest(videoPath, sceneID string, facesParameters FacesParameters) AnalyzeRequest {
 	return AnalyzeRequest{
-		VideoPath:      videoPath,
+		Source:         videoPath, // Renamed from VideoPath (breaking change v1.0.0)
 		SceneID:        sceneID,
 		ProcessingMode: "sequential", // Sequential processing to avoid GPU memory contention
 		Modules: Modules{
 			Faces: FacesModule{
-				Enabled: true,
-				Parameters: FacesParameters{
-					MinConfidence:                0.9,   // High confidence detections only
-					MaxFaces:                     50,    // Maximum unique faces to extract
-					SamplingInterval:             2.0,   // Sample every 2 seconds initially
-					UseSprites:                   useSprites,
-					SpriteVTTURL:                 spriteVTT,
-					SpriteImageURL:               spriteImage,
-					EnableDeduplication:          true,  // De-duplicate faces across video
-					EmbeddingSimilarityThreshold: 0.6,   // Cosine similarity threshold for clustering
-					DetectDemographics:           true,  // Detect age, gender, emotion
-					CacheDuration:                3600,  // Cache for 1 hour
-				},
+				Enabled:    true,
+				Parameters: facesParameters,
 			},
 		},
 	}
@@ -383,12 +241,28 @@ func IsVisionServiceAvailable(baseURL string) bool {
 }
 
 // ExtractFrame extracts a single frame from video at given timestamp
-// Uses the frame-server's /extract-frame endpoint via Vision API
-func (c *VisionServiceClient) ExtractFrame(videoPath string, timestamp float64) ([]byte, error) {
-	url := fmt.Sprintf("%s/extract-frame?video_path=%s&timestamp=%.2f&output_format=jpeg&quality=95",
-		c.BaseURL, videoPath, timestamp)
-
-	log.Debugf("Extracting frame: video=%s, timestamp=%.2fs", videoPath, timestamp)
+// Uses the frame-server's /extract-frame endpoint (separate service on different port)
+func (c *VisionServiceClient) ExtractFrame(videoPath string, timestamp float64, enhancement *EnhancementParameters) ([]byte, error) {
+	useEnhanced := false
+	if enhancement != nil && enhancement.Enabled {
+		useEnhanced = true
+	}
+	baseUrl := fmt.Sprintf("%s/extract-frame", c.FrameServerURL)
+	params := url.Values{}
+	params.Add("video_path", videoPath)
+	params.Add("timestamp", fmt.Sprintf("%.2f", timestamp))
+	params.Add("output_format", "jpeg")
+	params.Add("quality", "95")
+	frameType := ""
+	if useEnhanced {
+		// Use enhanced frame extraction
+		params.Add("enhance", "1")
+		params.Add("model", enhancement.Model)
+		params.Add("fidelity_weight", fmt.Sprintf("%.2f", enhancement.FidelityWeight))
+		frameType = " enhanced"
+	}
+	url := fmt.Sprintf("%s?%s", baseUrl, params.Encode())
+	log.Debugf("Extracting%s frame from: %s ", frameType, url)
 
 	resp, err := c.HTTPClient.Get(url)
 	if err != nil {
