@@ -468,3 +468,9 @@ func (c *Client) DeleteFace(imageID string) error {
 	log.Infof("DeleteFace: Deleted face image_id=%s", imageID)
 	return nil
 }
+
+// SubjectImageURL constructs the URL to access a subject's image by image ID
+func (c *Client) SubjectImageURL(imageID string) string {
+	return fmt.Sprintf("%s/api/v1/static/%s/images/%s",
+		c.BaseURL, c.RecognitionKey, imageID)
+}

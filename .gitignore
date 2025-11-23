@@ -87,6 +87,7 @@ coverage.html
 session-history.txt
 .claude/
 .mailmap
+.history
 
 # Archive and old versions
 archive/

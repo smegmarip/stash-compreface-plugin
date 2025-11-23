@@ -47,7 +47,7 @@ type Gender struct {
 
 // Mask represents mask detection
 type Mask struct {
-	Value       string  `json:"value"`
+	Value       string  `json:"value"` // "without_mask", "with_mask", "mask_weared_incorrect"
 	Probability float64 `json:"probability"`
 }
 

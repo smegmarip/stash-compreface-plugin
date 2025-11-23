@@ -238,6 +238,11 @@ func resolvePythonServiceURL(configuredURL string) string {
 		return fmt.Sprintf("%s://%s:%s", scheme, hostname, port)
 	}
 
+	// Case 1b: host.docker.internal - use as-is (Docker special hostname, no DNS resolution)
+	if hostname == "host.docker.internal" {
+		return fmt.Sprintf("%s://%s:%s", scheme, hostname, port)
+	}
+
 	// Case 2: Already an IP address - use as-is
 	if net.ParseIP(hostname) != nil {
 		return fmt.Sprintf("%s://%s:%s", scheme, hostname, port)
