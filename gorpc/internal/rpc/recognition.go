@@ -8,6 +8,7 @@ import (
 
 	"github.com/smegmarip/stash-compreface-plugin/internal/compreface"
 	"github.com/smegmarip/stash-compreface-plugin/internal/stash"
+	"github.com/smegmarip/stash-compreface-plugin/internal/vision"
 	"github.com/smegmarip/stash-compreface-plugin/pkg/utils"
 )
 
@@ -243,4 +244,55 @@ func (s *Service) recognizeImageFaces(imageID string, lowQuality bool) error {
 	log.Infof("Image %s: %d subjects created, %d existing subjects matched", imageID, createdSubjects, matchedSubjects)
 
 	return nil
+}
+
+// assessFaceQuality evaluates face quality components for CompreFace compatibility
+// minComposite is optional (0 = disabled) - pass config.MinSceneQualityScore
+func (s *Service) assessFaceQuality(quality *vision.QualityResult, minComposite float64) FaceQualityResult {
+	result := FaceQualityResult{
+		Acceptable: true,
+		Composite:  1.0,
+		Size:       1.0,
+		Pose:       1.0,
+		Occlusion:  1.0,
+		Sharpness:  1.0,
+	}
+
+	if quality == nil {
+		return result // No quality data, assume acceptable
+	}
+
+	result.Composite = quality.Composite
+	result.Size = quality.Components.Size
+	result.Pose = quality.Components.Pose
+	result.Occlusion = quality.Components.Occlusion
+	result.Sharpness = quality.Components.Sharpness
+
+	// Override mode: if minComposite > 0, use flat composite scoring only
+	if minComposite > 0 {
+		if result.Composite < minComposite {
+			result.Acceptable = false
+			result.Reason = fmt.Sprintf("composite=%.2f < %.2f", result.Composite, minComposite)
+		}
+		return result // Skip component gates
+	}
+
+	// Default mode: component-based gates
+	if result.Size < 0.2 {
+		result.Acceptable = false
+		result.Reason = fmt.Sprintf("size=%.2f < 0.2", result.Size)
+		return result
+	}
+	if result.Pose < 0.5 {
+		result.Acceptable = false
+		result.Reason = fmt.Sprintf("pose=%.2f < 0.5", result.Pose)
+		return result
+	}
+	if result.Occlusion < 0.6 {
+		result.Acceptable = false
+		result.Reason = fmt.Sprintf("occlusion=%.2f < 0.6", result.Occlusion)
+		return result
+	}
+
+	return result
 }

@@ -44,6 +44,17 @@ type IdentifyImageResponse struct {
 	Result *[]FaceIdentity `json:"result"`
 }
 
+// FaceQualityResult contains quality assessment outcome for CompreFace compatibility
+type FaceQualityResult struct {
+	Acceptable bool
+	Reason     string
+	Composite  float64
+	Size       float64
+	Pose       float64
+	Occlusion  float64
+	Sharpness  float64
+}
+
 func (s *Service) NormalizeHost(urlStr string) string {
 	log.Debugf("Normalizing URL host for: %s", urlStr)
 	hostName := "0.0.0.0"

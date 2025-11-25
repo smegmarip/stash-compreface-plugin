@@ -219,9 +219,8 @@ func (s *Service) processScene(visionClient *vision.VisionServiceClient, scene s
 	facesDetected := 0
 	for _, face := range results.Faces.Faces {
 		det := face.RepresentativeDetection
-		qualityOK := det.Quality != nil && det.Quality.Composite >= s.config.MinSceneProcessingQualityScore
-		notOccluded := det.Occlusion == nil || !det.Occlusion.Occluded
-		if qualityOK && notOccluded {
+		qr := s.assessFaceQuality(det.Quality, s.config.MinSceneProcessingQualityScore)
+		if qr.Acceptable {
 			facesDetected++
 		}
 	}
@@ -284,17 +283,14 @@ func (s *Service) processSceneFace(visionClient *vision.VisionServiceClient, sce
 		frameEnhancement = metadata.FrameEnhancement
 	}
 
-	qualityScore := 0.0
-	if det.Quality != nil {
-		qualityScore = det.Quality.Composite
-	}
-	isOccluded := det.Occlusion != nil && det.Occlusion.Occluded
+	// Assess face quality for recognition attempt (lower bar)
+	qr := s.assessFaceQuality(det.Quality, s.config.MinSceneProcessingQualityScore)
 
-	log.Debugf("Processing face %s: timestamp=%.2fs, confidence=%.2f, quality=%.2f enhanced=%v occluded=%v method=%s",
-		face.FaceID, det.Timestamp, det.Confidence, qualityScore, isEnhancedFace, isOccluded, metadata.Method)
+	log.Debugf("Processing face %s: timestamp=%.2fs, confidence=%.2f, quality=%.2f, size=%.2f, pose=%.2f, occlusion=%.2f, enhanced=%v, method=%s",
+		face.FaceID, det.Timestamp, det.Confidence, qr.Composite, qr.Size, qr.Pose, qr.Occlusion, isEnhancedFace, metadata.Method)
 
-	if isOccluded {
-		log.Debugf("Skipping occluded face %s", face.FaceID)
+	if !qr.Acceptable {
+		log.Debugf("Skipping face %s: %s", face.FaceID, qr.Reason)
 		return "", nil
 	}
 
@@ -377,19 +373,17 @@ func (s *Service) processSceneFace(visionClient *vision.VisionServiceClient, sce
 	}
 
 createNewSubject:
-	// Check quality score before creating new subject
-	// Only create subjects from high-quality unmatched faces
-	if qualityScore < s.config.MinSceneQualityScore {
-		log.Debugf("Skipping low-quality unmatched face %s (quality: %.2f < threshold: %.2f)",
-			face.FaceID, qualityScore, s.config.MinSceneQualityScore)
+	// Check quality for subject creation (higher bar than recognition)
+	qrCreate := s.assessFaceQuality(det.Quality, s.config.MinSceneQualityScore)
+	if !qrCreate.Acceptable {
+		log.Debugf("Skipping face %s for subject creation: %s", face.FaceID, qrCreate.Reason)
 		return "", nil
 	}
 
 	// No match - create new subject and performer
 	subjectName := createSubjectName(string(scene.ID), face.FaceID)
 
-	log.Debugf("Creating new subject for unmatched face %s (quality: %.2f >= threshold: %.2f)",
-		face.FaceID, qualityScore, s.config.MinSceneQualityScore)
+	log.Debugf("Creating new subject for unmatched face %s (composite=%.2f)", face.FaceID, qrCreate.Composite)
 
 	// Add subject to Compreface with face crop
 	addResponse, err := s.comprefaceClient.AddSubjectFromBytes(subjectName, faceCrop, "face.jpg")
