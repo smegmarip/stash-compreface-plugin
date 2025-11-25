@@ -99,3 +99,4 @@ gorpc/CURRENT_STATUS.md
 gorpc/REFACTOR_STATUS.md
 gorpc/REFACTORING_*.md
 gorpc/*.sh
+tests/e2e/data/
