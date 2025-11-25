@@ -39,13 +39,17 @@ settings:
     displayName: Minimum Face Size
     description: Minimum face dimensions in pixels (default 64)
     type: NUMBER
-  minSceneConfidenceScore:
-    displayName: Minimum Confidence Score (Scenes)
-    description: Minimum face confidence score for creating new subjects from scenes (default 0.7, range 0.0-1.0)
+  minConfidenceScore:
+    displayName: Minimum Confidence Score
+    description: Minimum face detection confidence score (default 0.7, range 0.0-1.0)
     type: STRING
-  minSceneQualityScore:
-    displayName: Minimum Quality Score (Scenes)
-    description: Minimum face quality score for creating new subjects from scenes (default 0.65, range 0.0-1.0)
+  minQualityScore:
+    displayName: Minimum Quality Score (Subject Creation)
+    description: Minimum composite quality for new subjects (default 0 = use component gates, range 0.0-1.0)
+    type: STRING
+  minProcessingQualityScore:
+    displayName: Minimum Quality Score (Recognition)
+    description: Minimum composite quality for recognition attempts (default 0 = use component gates, range 0.0-1.0)
     type: STRING
   scannedTagName:
     displayName: Scanned Tag Name
