@@ -219,7 +219,9 @@ func (s *Service) processScene(visionClient *vision.VisionServiceClient, scene s
 	facesDetected := 0
 	for _, face := range results.Faces.Faces {
 		det := face.RepresentativeDetection
-		if det.QualityScore >= s.config.MinSceneProcessingQualityScore {
+		qualityOK := det.Quality != nil && det.Quality.Composite >= s.config.MinSceneProcessingQualityScore
+		notOccluded := det.Occlusion == nil || !det.Occlusion.Occluded
+		if qualityOK && notOccluded {
 			facesDetected++
 		}
 	}
@@ -282,11 +284,18 @@ func (s *Service) processSceneFace(visionClient *vision.VisionServiceClient, sce
 		frameEnhancement = metadata.FrameEnhancement
 	}
 
-	log.Debugf("Processing face %s: timestamp=%.2fs, confidence=%.2f, quality=%.2f enhanced=%v occluded=%v method=%s",
-		face.FaceID, det.Timestamp, det.Confidence, det.QualityScore, isEnhancedFace, det.Occluded, metadata.Method)
+	qualityScore := 0.0
+	if det.Quality != nil {
+		qualityScore = det.Quality.Composite
+	}
+	isOccluded := det.Occlusion != nil && det.Occlusion.Occluded
 
-	if det.Occluded {
-		log.Debugf("Detected occluded face %s (occlusion_probability=%.2f)", face.FaceID, det.OcclusionProbability)
+	log.Debugf("Processing face %s: timestamp=%.2fs, confidence=%.2f, quality=%.2f enhanced=%v occluded=%v method=%s",
+		face.FaceID, det.Timestamp, det.Confidence, qualityScore, isEnhancedFace, isOccluded, metadata.Method)
+
+	if isOccluded {
+		log.Debugf("Skipping occluded face %s", face.FaceID)
+		return "", nil
 	}
 
 	// Extract frame/thumbnail based on detection method
@@ -370,9 +379,9 @@ func (s *Service) processSceneFace(visionClient *vision.VisionServiceClient, sce
 createNewSubject:
 	// Check quality score before creating new subject
 	// Only create subjects from high-quality unmatched faces
-	if det.QualityScore < s.config.MinSceneQualityScore {
+	if qualityScore < s.config.MinSceneQualityScore {
 		log.Debugf("Skipping low-quality unmatched face %s (quality: %.2f < threshold: %.2f)",
-			face.FaceID, det.QualityScore, s.config.MinSceneQualityScore)
+			face.FaceID, qualityScore, s.config.MinSceneQualityScore)
 		return "", nil
 	}
 
@@ -380,7 +389,7 @@ createNewSubject:
 	subjectName := createSubjectName(string(scene.ID), face.FaceID)
 
 	log.Debugf("Creating new subject for unmatched face %s (quality: %.2f >= threshold: %.2f)",
-		face.FaceID, det.QualityScore, s.config.MinSceneQualityScore)
+		face.FaceID, qualityScore, s.config.MinSceneQualityScore)
 
 	// Add subject to Compreface with face crop
 	addResponse, err := s.comprefaceClient.AddSubjectFromBytes(subjectName, faceCrop, "face.jpg")

@@ -18,7 +18,8 @@ type VisionServiceClient struct {
 
 // AnalyzeRequest represents job submission parameters (matching Vision API schema)
 type AnalyzeRequest struct {
-	Source         string  `json:"source"` // Renamed from video_path (breaking change v1.0.0)
+	Source         string  `json:"source"`                    // Path, URL, or image source
+	SourceType     string  `json:"source_type,omitempty"`     // video, image, url (auto-detected if omitted)
 	SceneID        string  `json:"scene_id"`
 	JobID          string  `json:"job_id,omitempty"`
 	ProcessingMode string  `json:"processing_mode,omitempty"` // sequential or parallel
@@ -113,16 +114,35 @@ type Demographics struct {
 
 // VisionDetection represents a single face detection in a frame
 type VisionDetection struct {
-	FrameIndex           int                    `json:"frame_index"`
-	Timestamp            float64                `json:"timestamp"`
-	BBox                 VisionBoundingBox      `json:"bbox"`
-	Confidence           float64                `json:"confidence"`
-	QualityScore         float64                `json:"quality_score"`
-	Pose                 string                 `json:"pose"`
-	Landmarks            map[string]interface{} `json:"landmarks,omitempty"`
-	Enhanced             bool                   `json:"enhanced,omitempty"`              // True if face was enhanced via CodeFormer/GFPGAN (added v1.0.0)
-	Occluded             bool                   `json:"occluded,omitempty"`              // True if face is occluded (glasses, mask, hand, etc.)
-	OcclusionProbability float64                `json:"occlusion_probability,omitempty"` // Probability that face is occluded (0.0-1.0)
+	FrameIndex int                    `json:"frame_index"`
+	Timestamp  float64                `json:"timestamp"`
+	BBox       VisionBoundingBox      `json:"bbox"`
+	Confidence float64                `json:"confidence"`
+	Quality    *QualityResult         `json:"quality,omitempty"`
+	Pose       string                 `json:"pose"`
+	Landmarks  map[string]interface{} `json:"landmarks,omitempty"`
+	Enhanced   bool                   `json:"enhanced,omitempty"` // True if face was enhanced via CodeFormer/GFPGAN
+	Occlusion  *OcclusionResult       `json:"occlusion,omitempty"`
+}
+
+// QualityResult represents face quality assessment
+type QualityResult struct {
+	Composite  float64           `json:"composite"`
+	Components QualityComponents `json:"components,omitempty"`
+}
+
+// QualityComponents represents individual quality factors
+type QualityComponents struct {
+	Size      float64 `json:"size"`
+	Pose      float64 `json:"pose"`
+	Occlusion float64 `json:"occlusion"`
+	Sharpness float64 `json:"sharpness"`
+}
+
+// OcclusionResult represents face occlusion detection
+type OcclusionResult struct {
+	Occluded    bool    `json:"occluded"`
+	Probability float64 `json:"probability"`
 }
 
 // VisionBoundingBox represents face coordinates
