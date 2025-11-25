@@ -13,9 +13,9 @@ type PluginConfig struct {
 	MaxBatchSize                   int
 	MinSimilarity                  float64
 	MinFaceSize                    int
-	MinSceneConfidenceScore        float64 // Minimum confidence score for creating new subjects from scenes
-	MinSceneQualityScore           float64 // Minimum quality score for creating new subjects from scenes
-	MinSceneProcessingQualityScore float64 // Minimum quality score for processing faces from scenes
+	MinConfidenceScore        float64 // Minimum confidence score for face detection
+	MinQualityScore           float64 // Minimum composite quality for subject creation (0=use component gates)
+	MinProcessingQualityScore float64 // Minimum composite quality for recognition (0=use component gates)
 	EnhanceQualityScoreTrigger     float64 // Quality score threshold to trigger enhancement
 	ScannedTagName                 string
 	MatchedTagName                 string

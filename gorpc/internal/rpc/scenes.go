@@ -156,8 +156,8 @@ func (s *Service) processScene(visionClient *vision.VisionServiceClient, scene s
 		spriteImage = s.NormalizeHost(scene.Paths.Sprite)
 	}
 
-	minConfidence := s.config.MinSceneConfidenceScore
-	minQuality := s.config.MinSceneProcessingQualityScore
+	minConfidence := s.config.MinConfidenceScore
+	minQuality := s.config.MinProcessingQualityScore
 	qualityTrigger := s.config.EnhanceQualityScoreTrigger
 
 	enhancementParams := vision.EnhancementParameters{
@@ -219,7 +219,7 @@ func (s *Service) processScene(visionClient *vision.VisionServiceClient, scene s
 	facesDetected := 0
 	for _, face := range results.Faces.Faces {
 		det := face.RepresentativeDetection
-		qr := s.assessFaceQuality(det.Quality, s.config.MinSceneProcessingQualityScore)
+		qr := s.assessFaceQuality(det.Quality, s.config.MinProcessingQualityScore)
 		if qr.Acceptable {
 			facesDetected++
 		}
@@ -284,7 +284,7 @@ func (s *Service) processSceneFace(visionClient *vision.VisionServiceClient, sce
 	}
 
 	// Assess face quality for recognition attempt (lower bar)
-	qr := s.assessFaceQuality(det.Quality, s.config.MinSceneProcessingQualityScore)
+	qr := s.assessFaceQuality(det.Quality, s.config.MinProcessingQualityScore)
 
 	log.Debugf("Processing face %s: timestamp=%.2fs, confidence=%.2f, quality=%.2f, size=%.2f, pose=%.2f, occlusion=%.2f, enhanced=%v, method=%s",
 		face.FaceID, det.Timestamp, det.Confidence, qr.Composite, qr.Size, qr.Pose, qr.Occlusion, isEnhancedFace, metadata.Method)
@@ -374,7 +374,7 @@ func (s *Service) processSceneFace(visionClient *vision.VisionServiceClient, sce
 
 createNewSubject:
 	// Check quality for subject creation (higher bar than recognition)
-	qrCreate := s.assessFaceQuality(det.Quality, s.config.MinSceneQualityScore)
+	qrCreate := s.assessFaceQuality(det.Quality, s.config.MinQualityScore)
 	if !qrCreate.Acceptable {
 		log.Debugf("Skipping face %s for subject creation: %s", face.FaceID, qrCreate.Reason)
 		return "", nil

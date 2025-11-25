@@ -18,19 +18,19 @@ import (
 func Load(input common.PluginInput) (*PluginConfig, error) {
 	config := &PluginConfig{
 		// Default values
-		CooldownSeconds:                10,
-		MaxBatchSize:                   20,
-		MinSimilarity:                  0.81,
-		MinFaceSize:                    64,
-		MinSceneConfidenceScore:        0.7,
-		MinSceneQualityScore:           0.65,
-		MinSceneProcessingQualityScore: 0.2,
-		EnhanceQualityScoreTrigger:     0.5,
-		ScannedTagName:                 "Compreface Scanned",
-		MatchedTagName:                 "Compreface Matched",
-		PartialTagName:                 "Compreface Partial",
-		CompleteTagName:                "Compreface Complete",
-		SyncedTagName:                  "Compreface Synced",
+		CooldownSeconds:           10,
+		MaxBatchSize:              20,
+		MinSimilarity:             0.81,
+		MinFaceSize:               64,
+		MinConfidenceScore:        0.7,
+		MinQualityScore:           0, // 0 = use component gates (size, pose, occlusion)
+		MinProcessingQualityScore: 0, // 0 = use component gates (size, pose, occlusion)
+		EnhanceQualityScoreTrigger: 0.5,
+		ScannedTagName:            "Compreface Scanned",
+		MatchedTagName:            "Compreface Matched",
+		PartialTagName:            "Compreface Partial",
+		CompleteTagName:           "Compreface Complete",
+		SyncedTagName:             "Compreface Synced",
 	}
 
 	// Fetch plugin configuration from Stash
@@ -64,11 +64,14 @@ func Load(input common.PluginInput) (*PluginConfig, error) {
 		if val := getIntSetting(pluginConfig, "minFaceSize"); val > 0 {
 			config.MinFaceSize = val
 		}
-		if val := getFloatSetting(pluginConfig, "minSceneConfidenceScore"); val > 0 {
-			config.MinSceneConfidenceScore = val
+		if val := getFloatSetting(pluginConfig, "minConfidenceScore"); val > 0 {
+			config.MinConfidenceScore = val
 		}
-		if val := getFloatSetting(pluginConfig, "minSceneQualityScore"); val > 0 {
-			config.MinSceneQualityScore = val
+		if val := getFloatSetting(pluginConfig, "minQualityScore"); val > 0 {
+			config.MinQualityScore = val
+		}
+		if val := getFloatSetting(pluginConfig, "minProcessingQualityScore"); val > 0 {
+			config.MinProcessingQualityScore = val
 		}
 		if val := getStringSetting(pluginConfig, "scannedTagName"); val != "" {
 			config.ScannedTagName = val

@@ -247,7 +247,7 @@ func (s *Service) recognizeImageFaces(imageID string, lowQuality bool) error {
 }
 
 // assessFaceQuality evaluates face quality components for CompreFace compatibility
-// minComposite is optional (0 = disabled) - pass config.MinSceneQualityScore
+// minComposite > 0 = override mode (flat composite), minComposite = 0 = component gates
 func (s *Service) assessFaceQuality(quality *vision.QualityResult, minComposite float64) FaceQualityResult {
 	result := FaceQualityResult{
 		Acceptable: true,
