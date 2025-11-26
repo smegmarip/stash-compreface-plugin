@@ -70,7 +70,7 @@ func UpdateScene(client *graphql.Client, sceneID graphql.ID, input SceneUpdateIn
 	ctx := context.Background()
 
 	var mutation struct {
-		SceneUpdate SceneUpdateInput `graphql:"sceneUpdate(input: $input)"`
+		SceneUpdate SceneUpdate `graphql:"sceneUpdate(input: $input)"`
 	}
 
 	variables := map[string]interface{}{
