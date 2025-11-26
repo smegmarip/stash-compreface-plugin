@@ -286,8 +286,8 @@ func (s *Service) processSceneFace(visionClient *vision.VisionServiceClient, sce
 	// Assess face quality for recognition attempt (lower bar)
 	qr := s.assessFaceQuality(det.Quality, s.config.MinProcessingQualityScore)
 
-	log.Debugf("Processing face %s: timestamp=%.2fs, confidence=%.2f, quality=%.2f, size=%.2f, pose=%.2f, occlusion=%.2f, enhanced=%v, method=%s",
-		face.FaceID, det.Timestamp, det.Confidence, qr.Composite, qr.Size, qr.Pose, qr.Occlusion, isEnhancedFace, metadata.Method)
+	log.Debugf("Processing face %s: timestamp=%.2fs, confidence=%.2f, quality=%.2f, size=%.2f, pose=%.2f, occlusion=%.2f, sharpness=%.2f, enhanced=%v, method=%s",
+		face.FaceID, det.Timestamp, det.Confidence, qr.Composite, qr.Size, qr.Pose, qr.Occlusion, qr.Sharpness, isEnhancedFace, metadata.Method)
 
 	if !qr.Acceptable {
 		log.Debugf("Skipping face %s: %s", face.FaceID, qr.Reason)
@@ -298,11 +298,11 @@ func (s *Service) processSceneFace(visionClient *vision.VisionServiceClient, sce
 	var frameBytes []byte
 	var err error
 
-	spriteVTT := s.NormalizeHost(scene.Paths.VTT)
-	spriteImage := s.NormalizeHost(scene.Paths.Sprite)
-
 	if metadata.Method == "sprites" {
 		// Extract thumbnail from sprite image
+		spriteVTT := s.NormalizeHost(scene.Paths.VTT)
+		spriteImage := s.NormalizeHost(scene.Paths.Sprite)
+
 		log.Debugf("Extracting face from sprite: vtt=%s, sprite=%s, timestamp=%.2f",
 			spriteVTT, spriteImage, det.Timestamp)
 		frameBytes, err = ExtractFromSprite(spriteImage, spriteVTT, det.Timestamp)
