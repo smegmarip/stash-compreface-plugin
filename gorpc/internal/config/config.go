@@ -82,9 +82,6 @@ func Load(input common.PluginInput) (*PluginConfig, error) {
 		if val := getStringSetting(pluginConfig, "visionServiceUrl"); val != "" {
 			config.VisionServiceURL = val
 		}
-		if val := getStringSetting(pluginConfig, "qualityServiceUrl"); val != "" {
-			config.QualityServiceURL = val
-		}
 		if val := getStringSetting(pluginConfig, "stashHostUrl"); val != "" {
 			config.StashHostURL = val
 		}
@@ -99,14 +96,6 @@ func Load(input common.PluginInput) (*PluginConfig, error) {
 		log.Infof("Vision Service configured at: %s", config.VisionServiceURL)
 	} else {
 		log.Info("Vision Service not configured (video recognition disabled)")
-	}
-
-	// Resolve Quality Service URL with auto-detection (optional service)
-	if config.QualityServiceURL != "" {
-		config.QualityServiceURL = resolveServiceURL(config.QualityServiceURL, "stash-face-quality", "6001")
-		log.Infof("Quality Service configured at: %s", config.QualityServiceURL)
-	} else {
-		log.Info("Quality Service not configured (enhanced quality assessment disabled)")
 	}
 
 	if config.StashHostURL != "" {

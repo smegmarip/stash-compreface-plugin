@@ -63,10 +63,6 @@ settings:
     displayName: Vision Service URL
     description: URL of the stash-auto-vision service for video face recognition (leave empty to disable, default http://vision-api:5010)
     type: STRING
-  qualityServiceUrl:
-    displayName: Quality Service URL
-    description: URL of the stash-face-quality service for enhanced face quality assessment (leave empty to disable, default http://stash-face-quality:6001)
-    type: STRING
   stashHostUrl:
     displayName: Stash Host URL
     description: URL of the Stash host (leave empty for auto-detection)
@@ -79,16 +75,10 @@ tasks:
       mode: synchronizePerformers
       limit: 0
 
-  - name: Recognize Images (High Quality)
-    description: Detect and group faces in high-quality images
+  - name: Recognize Images
+    description: Detect and group faces in images using Vision Service
     defaultArgs:
-      mode: recognizeImagesHQ
-      limit: 0
-
-  - name: Recognize Images (Low Quality)
-    description: Detect and group faces in low-quality images
-    defaultArgs:
-      mode: recognizeImagesLQ
+      mode: recognizeImages
       limit: 0
 
   - name: Identify All Images

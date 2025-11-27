@@ -7,7 +7,6 @@ type PluginConfig struct {
 	DetectionAPIKey                string
 	VerificationAPIKey             string
 	VisionServiceURL               string
-	QualityServiceURL              string
 	StashHostURL                   string
 	CooldownSeconds                int
 	MaxBatchSize                   int

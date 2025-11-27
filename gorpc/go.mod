@@ -3,7 +3,6 @@ module github.com/smegmarip/stash-compreface-plugin
 go 1.24.3
 
 require (
-	github.com/Kagami/go-face v0.0.0-20210630145111-0c14797b4d0e
 	github.com/disintegration/imaging v1.6.2
 	github.com/hasura/go-graphql-client v0.15.0
 	github.com/stashapp/stash v0.29.3

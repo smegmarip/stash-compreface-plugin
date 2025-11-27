@@ -68,15 +68,10 @@ func (s *Service) Run(input common.PluginInput, output *common.PluginOutput) err
 		err = s.synchronizePerformers(limit)
 		outputStr = "Performer synchronization completed"
 
-	case "recognizeImagesHQ":
-		log.Infof("Starting high-quality image recognition (limit=%d)", limit)
-		err = s.recognizeImages(false, limit) // lowQuality=false
-		outputStr = "High-quality image recognition completed"
-
-	case "recognizeImagesLQ":
-		log.Infof("Starting low-quality image recognition (limit=%d)", limit)
-		err = s.recognizeImages(true, limit) // lowQuality=true
-		outputStr = "Low-quality image recognition completed"
+	case "recognizeImages":
+		log.Infof("Starting image recognition (limit=%d)", limit)
+		err = s.recognizeImages(limit)
+		outputStr = "Image recognition completed"
 
 	case "identifyImagesAll":
 		log.Infof("Starting image identification (all, limit=%d)", limit)

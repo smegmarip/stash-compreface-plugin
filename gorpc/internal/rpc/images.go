@@ -19,12 +19,254 @@ import (
 
 	"github.com/smegmarip/stash-compreface-plugin/internal/compreface"
 	"github.com/smegmarip/stash-compreface-plugin/internal/stash"
+	"github.com/smegmarip/stash-compreface-plugin/internal/vision"
 	"github.com/smegmarip/stash-compreface-plugin/pkg/utils"
 )
 
 // ============================================================================
 // Image Business Logic (Service Layer)
 // ============================================================================
+
+// recognizeImages performs batch face recognition on images using Vision Service
+func (s *Service) recognizeImages(limit int) error {
+	if s.stopping {
+		return fmt.Errorf("operation cancelled")
+	}
+
+	// Check if Vision Service is configured
+	if s.config.VisionServiceURL == "" {
+		return fmt.Errorf("vision service URL not configured")
+	}
+
+	// Initialize Vision Service client
+	visionClient := vision.NewVisionServiceClient(s.config.VisionServiceURL)
+
+	// Health check
+	if err := visionClient.HealthCheck(); err != nil {
+		log.Errorf("Health check failed: %v", err)
+		return fmt.Errorf("vision service health check failed: %w", err)
+	}
+
+	log.Infof("Starting batch image recognition")
+
+	// Get scanned tag ID for filtering
+	scannedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.ScannedTagName, "Compreface Scanned")
+	if err != nil {
+		return fmt.Errorf("failed to get scanned tag: %w", err)
+	}
+
+	// Get completion tag ID for filtering (exclude already-complete images)
+	completeTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.CompleteTagName, "Compreface Complete")
+	if err != nil {
+		return fmt.Errorf("failed to get complete tag: %w", err)
+	}
+
+	batchSize := s.config.MaxBatchSize
+	page := 0
+	total := 0
+	processedCount := 0
+	successCount := 0
+	failureCount := 0
+
+	for {
+		if s.stopping {
+			return fmt.Errorf("operation cancelled")
+		}
+
+		page++
+
+		// Fetch unscanned images (excluding scanned AND complete)
+		tagsFilter := stash.HierarchicalMultiCriterionInput{
+			Value:    []string{string(scannedTagID), string(completeTagID)},
+			Modifier: stash.CriterionModifierExcludes,
+		}
+		filter := &stash.ImageFilterType{
+			Tags: &tagsFilter,
+		}
+		images, count, err := stash.FindImages(s.graphqlClient, filter, page, batchSize)
+		if err != nil {
+			return fmt.Errorf("failed to query images: %w", err)
+		}
+
+		if page == 1 {
+			total = count
+
+			// Apply limit if specified
+			if limit > 0 && limit < total {
+				total = limit
+				log.Infof("Found %d images, limiting to %d", count, limit)
+			} else {
+				log.Infof("Found %d images to process", total)
+			}
+		}
+
+		if len(images) == 0 {
+			break
+		}
+
+		log.Infof("Processing batch %d: %d images", page, len(images))
+
+		// Process each image in the batch
+		for _, img := range images {
+			if s.stopping {
+				return fmt.Errorf("operation cancelled")
+			}
+
+			// Check if limit reached
+			if limit > 0 && processedCount >= limit {
+				log.Infof("Reached limit of %d images, stopping", limit)
+				break
+			}
+
+			processedCount++
+			progress := float64(processedCount) / float64(total)
+			log.Progress(progress)
+
+			log.Infof("Processing image %d/%d: %s", processedCount, total, img.ID)
+
+			err := s.recognizeImageFaces(visionClient, string(img.ID))
+			if err != nil {
+				log.Warnf("Failed to recognize faces in image %s: %v", img.ID, err)
+				failureCount++
+			} else {
+				successCount++
+			}
+		}
+
+		// Break outer loop if limit reached
+		if limit > 0 && processedCount >= limit {
+			break
+		}
+
+		// Apply cooldown after processing batch
+		if len(images) == batchSize && processedCount < total {
+			s.applyCooldown()
+		}
+	}
+
+	log.Progress(1.0)
+	log.Infof("Batch recognition complete: %d processed, %d succeeded, %d failed", processedCount, successCount, failureCount)
+
+	return nil
+}
+
+// recognizeImageFaces detects and recognizes faces in an image using Vision Service
+func (s *Service) recognizeImageFaces(visionClient *vision.VisionServiceClient, imageID string) error {
+	// Step 1: Get image from Stash
+	img, err := stash.GetImage(s.graphqlClient, graphql.ID(imageID))
+	if err != nil {
+		return fmt.Errorf("failed to get image: %w", err)
+	}
+
+	if len(img.Files) == 0 {
+		return fmt.Errorf("image %s has no files", imageID)
+	}
+
+	imagePath := img.Files[0].Path
+
+	// Step 2: Submit to Vision Service for face detection
+	results, err := s.SubmitImageJob(visionClient, imagePath, imageID)
+	if err != nil {
+		return fmt.Errorf("vision service failed: %w", err)
+	}
+
+	// Step 3: Add scanned tag regardless of results
+	scannedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.ScannedTagName, "Compreface Scanned")
+	if err == nil {
+		stash.AddTagToImage(s.graphqlClient, graphql.ID(imageID), scannedTagID)
+	}
+
+	// Check if faces were found
+	if results.Faces == nil || len(results.Faces.Faces) == 0 {
+		log.Debugf("No faces detected in image %s", imageID)
+		// Mark as complete (no faces to match)
+		s.updateImageCompletionStatus(graphql.ID(imageID), 0, 0)
+		return nil
+	}
+
+	// Count processable faces
+	facesDetected := 0
+	for _, face := range results.Faces.Faces {
+		det := face.RepresentativeDetection
+		qr := s.assessFaceQuality(det.Quality, s.config.MinProcessingQualityScore)
+		if qr.Acceptable {
+			facesDetected++
+		}
+	}
+	log.Infof("Image %s: Found %d processable faces out of %d total faces", imageID, facesDetected, len(results.Faces.Faces))
+
+	// Step 4: Load image bytes for face cropping
+	imageBytes, err := LoadImageBytes(imagePath)
+	if err != nil {
+		return fmt.Errorf("failed to load image bytes: %w", err)
+	}
+
+	// Step 5: Process each face
+	requestMetadata := results.Faces.Metadata
+	matchedPerformers := []graphql.ID{}
+	facesProcessed := 0
+
+	for _, face := range results.Faces.Faces {
+		ctx := FaceProcessingContext{
+			ImageBytes: imageBytes,
+			SourceID:   imageID,
+		}
+		performerID, err := s.processFace(visionClient, ctx, face, requestMetadata)
+		if err != nil {
+			log.Warnf("Failed to process face %s: %v", face.FaceID, err)
+			continue
+		}
+		if performerID != "" {
+			matchedPerformers = append(matchedPerformers, performerID)
+			facesProcessed++
+		}
+	}
+
+	// Step 6: Update image with matched performers
+	if len(matchedPerformers) > 0 {
+		log.Infof("Image %s: Matched/created %d performers", imageID, len(matchedPerformers))
+
+		// Get existing performers and merge
+		existingPerformerIDs := make([]graphql.ID, len(img.Performers))
+		for i, p := range img.Performers {
+			existingPerformerIDs[i] = p.ID
+		}
+
+		// Merge and deduplicate
+		allPerformerIDs := append(existingPerformerIDs, matchedPerformers...)
+		allPerformerIDs = utils.DeduplicateIDs(allPerformerIDs)
+
+		var performerIDStrs []string = make([]string, len(allPerformerIDs))
+		for i, id := range allPerformerIDs {
+			performerIDStrs[i] = string(id)
+		}
+
+		input := stash.ImageUpdateInput{
+			ID:           imageID,
+			PerformerIds: performerIDStrs,
+		}
+		err = stash.UpdateImage(s.graphqlClient, graphql.ID(imageID), input)
+		if err != nil {
+			log.Warnf("Failed to update image performers: %v", err)
+		}
+
+		// Add matched tag
+		matchedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.MatchedTagName, "Compreface Matched")
+		if err == nil {
+			stash.AddTagToImage(s.graphqlClient, graphql.ID(imageID), matchedTagID)
+		}
+	}
+
+	// Step 7: Update completion status
+	err = s.updateImageCompletionStatus(graphql.ID(imageID), facesDetected, facesProcessed)
+	if err != nil {
+		log.Warnf("Failed to update completion status: %v", err)
+	}
+
+	log.Infof("Image %s: %d subjects processed", imageID, facesProcessed)
+
+	return nil
+}
 
 // identifyImage identifies faces in a single image and optionally creates performers
 func (s *Service) identifyImage(imageID string, createPerformer bool, faceIndex *int) (*[]FaceIdentity, error) {
