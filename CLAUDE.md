@@ -1,19 +1,20 @@
 # Stash Compreface Plugin - Development Guide
 
-**Status:** Production Ready (12/13 tasks complete, 92% coverage)
-**Version:** 2.0.0
-**Last Updated:** 2025-11-22
+**Status:** Production Ready (13/14 tasks complete, 93% coverage)
+**Version:** 2.1.0
+**Last Updated:** 2025-11-27
 
 ---
 
 ## Project Overview
 
-Go RPC plugin for Stash that integrates with Compreface for face recognition and performer management. Features Vision Service v1.0.0 integration with occlusion detection, sprite-based face extraction, and gallery operations.
+Go RPC plugin for Stash that integrates with Compreface for face recognition and performer management. Features Vision Service v1.0.0 integration with occlusion detection, embedding-based recognition, sprite-based face extraction, and gallery operations.
 
 ### Key Features
 
-- **13 Plugin Tasks:** Performer sync, image recognition (HQ/LQ), identification, scene recognition (new/all, sprite/video), gallery processing, reset operations
+- **14 Plugin Tasks:** Performer sync, image recognition, identification, scene recognition (new/all, sprite/video), gallery processing, reset operations
 - **Vision Service v1.0.0:** Face detection with InsightFace, occlusion filtering (ResNet18 ~100% TPR), face enhancement (CodeFormer/GFPGAN)
+- **Embedding Recognition:** 512-D ArcFace embeddings for fast matching, falls back to image-based
 - **Sprite Processing:** VTT parsing and thumbnail extraction from Stash sprite sheets
 - **Gallery Operations:** Complete CRUD for gallery-scoped face recognition
 - **GPU Optimization:** Configurable batch sizes (default: 20) and cooldown periods (default: 10s)
@@ -31,7 +32,7 @@ Go RPC plugin for Stash that integrates with Compreface for face recognition and
 
 Existing Compreface databases depend on this format. Changes would break performer associations on remote instances.
 
-**Implementation:** `gorpc/internal/compreface/subject.go:CreateSubjectName()`
+**Implementation:** `gorpc/internal/compreface/subjects.go:CreateSubjectName()`
 
 ---
 
@@ -41,13 +42,14 @@ Existing Compreface databases depend on this format. Changes would break perform
 
 ```
 internal/
-├── rpc/          # Business logic (869 lines) - Task handlers, orchestration
-├── stash/        # GraphQL repository (709 lines) - Tags, Images, Performers, Scenes
-├── compreface/   # HTTP client (573 lines) - Face detection/recognition
-├── vision/       # Vision Service (412 lines) - Video scene processing
-├── quality/      # Quality assessment (1,416 lines) - Dual Go/Python implementation
-└── config/       # Configuration (226 lines) - Settings, DNS resolution
+├── rpc/          # Business logic (~2,400 lines) - Task handlers, orchestration
+├── stash/        # GraphQL repository (~1,100 lines) - Tags, Images, Performers, Scenes
+├── compreface/   # HTTP client (~765 lines) - Face detection/recognition, embeddings
+├── vision/       # Vision Service (~460 lines) - Video/image face detection
+└── config/       # Configuration (~380 lines) - Settings, DNS resolution
 ```
+
+**Total:** ~5,500 lines Go
 
 **See `docs/ARCHITECTURE.md` for detailed component relationships**
 
@@ -75,18 +77,26 @@ query := fmt.Sprintf(`mutation {
 data, err := client.ExecRaw(ctx, query, nil)
 ```
 
-### 2. Dual Quality Assessment
+### 2. Embedding-First Recognition
 
-**Go-face (MMOD):** High precision, low recall - single operations
-**Python dlib Service:** High recall with filtering - batch operations
-**Auto Mode:** Selects detector based on operation type
+**Strategy:** Try embedding recognition before image-based for performance
+**Benefits:** ~100ms faster per face, 4KB vs 20-50KB bandwidth
 
-**See `docs/QUALITY_SERVICE.md` for details**
+```go
+// Try embedding first, fall back to image-based
+if len(face.Embedding) == 512 {
+    performerID, similarity, err := s.recognizeByEmbedding(face.Embedding)
+    if err == nil && performerID != "" {
+        return performerID, nil
+    }
+}
+// Fall back to image-based recognition...
+```
 
 ### 3. Vision Service Architecture
 
 **Decision:** Standalone `stash-auto-vision` service (separate project)
-**Benefits:** InsightFace 512-D embeddings, scene segmentation, independent scaling
+**Benefits:** InsightFace 512-D embeddings, quality assessment, occlusion detection, independent scaling
 
 **See `docs/VISION_SERVICE.md` for integration details**
 
@@ -102,20 +112,16 @@ DNS-aware resolution supporting container names, hostnames, IPs, and localhost.
 
 ### Completed Features
 
-✅ **Core Operations:** All 13 plugin tasks implemented
-✅ **Vision Service v1.0.0:** Full integration with breaking API changes
+✅ **Core Operations:** All 14 plugin tasks implemented
+✅ **Vision Service v1.0.0:** Full integration with face detection and quality assessment
+✅ **Embedding Recognition:** 512-D ArcFace embedding matching with fallback
 ✅ **Occlusion Detection:** ResNet18 model filtering (masks, hands, glasses)
 ✅ **Sprite Processing:** VTT parsing and thumbnail extraction
 ✅ **Gallery Operations:** Complete CRUD with tag management
 ✅ **Test Infrastructure:** Integration and E2E test suites
 
-**Total:** ~5,500 lines Go + 483 lines Python
-**Binary:** 8.4M
-**Test Coverage:** 12/13 tasks verified (92%)
-
-### Pending
-
-⏸️ **Recognize Images (LQ):** Awaiting Vision Service image processing support (currently uses direct CompreFace same as HQ mode)
+**Binary:** ~8.4M
+**Test Coverage:** 13/14 tasks verified (93%)
 
 ### Deferred/Optional
 
@@ -136,7 +142,7 @@ go build -o stash-compreface-rpc     # Build
 
 ### Configuration
 
-**Minimium Required:**
+**Minimum Required:**
 
 - `recognitionApiKey` - Compreface recognition API key
 - `detectionApiKey` - Compreface detection API key
@@ -148,20 +154,25 @@ go build -o stash-compreface-rpc     # Build
 - `minSimilarity` - Face match threshold (default: 0.81)
 - `minFaceSize` - Minimum face dimensions (default: 64px)
 
+**Quality Settings:**
+
+- `minConfidenceScore` - Detection confidence (default: 0.7)
+- `minQualityScore` - Subject creation threshold (default: 0, uses component gates)
+- `minProcessingQualityScore` - Recognition attempt threshold (default: 0)
+- `enhanceQualityScoreTrigger` - Face enhancement trigger (default: 0.5)
+
 **Optional Services:**
 
-- `visionServiceURL` - Vision Service for scene recognition (default: `http://vision-api:5010`)
+- `visionServiceURL` - Vision Service for face detection (default: `http://vision-api:5010`)
 
 ### Testing
 
 ```bash
-# E2E tests (requires Stash + Compreface running)
-cd tests/e2e && ./run_suite.sh
+# Unit tests
+cd gorpc && go test ./tests/unit/... -v
 
-# Individual task tests
-./run_synchronize_performers.sh
-./run_identify_images.sh
-./run_recognize_scenes.sh  # Currently blocked by Vision Service issue
+# E2E tests (requires Stash + Compreface + Vision Service running)
+cd tests/e2e && ./comprehensive_tests.sh
 ```
 
 **See `docs/TESTING.md` for comprehensive testing procedures**
@@ -171,11 +182,6 @@ cd tests/e2e && ./run_suite.sh
 ## Documentation Reference
 
 - **Architecture:** `docs/ARCHITECTURE.md` - System design and component relationships
-- **Features:**
-  - `docs/COMPREFACE_INTEGRATION.md` - Face recognition, subject management
-  - `docs/STASH_INTEGRATION.md` - GraphQL operations, tag/performer/scene management
-  - `docs/VISION_SERVICE.md` - Video scene processing integration
-  - `docs/QUALITY_SERVICE.md` - Face quality assessment strategies
 - **Testing:** `docs/TESTING.md` - Test scenarios, strategies, procedures
 - **User Guide:** `README.md` - Installation, configuration, usage
 
@@ -219,6 +225,16 @@ tagIDs = append(tagIDs, newTagID)
 stash.UpdateSceneTags(client, sceneID, tagIDs)
 ```
 
+**Embedding Recognition Flow:**
+
+```go
+// processFace() in internal/rpc/vision.go
+// 1. Quality check
+// 2. Try embedding recognition (if 512-D embedding available)
+// 3. Fall back to image-based recognition
+// 4. Create new subject if no match
+```
+
 **Service Health Checks:**
 
 ```go
@@ -234,29 +250,28 @@ if err := visionClient.HealthCheck(); err != nil {
 3. **Pass complete tag/performer lists** - Not deltas, entire replacement arrays
 4. **Continue on item failures** - Batch operations should complete despite individual errors
 5. **Apply cooldown after batches** - Prevents GPU overheating on intensive operations
+6. **Try embedding recognition first** - Falls back to image-based if no match
 
-### Current Blockers
+### Key Files
 
-**Scene Recognition (Tasks 7-10):**
+| File | Purpose |
+|------|---------|
+| `internal/rpc/handlers.go` | Task routing (14 modes) |
+| `internal/rpc/vision.go` | Vision Service integration, processFace() |
+| `internal/rpc/images.go` | Image recognition workflows |
+| `internal/rpc/scenes.go` | Scene recognition workflows |
+| `internal/compreface/compreface.go` | Compreface API client |
+| `internal/compreface/types.go` | Request/response types including embeddings |
+| `internal/stash/performers.go` | Performer GraphQL operations |
+| `internal/vision/vision.go` | Vision Service client |
 
-- Plugin code is complete and builds successfully
-- Integration tests pass up to Vision Service call
-- Vision Service not detecting faces in test videos (upstream issue)
-- Next steps: Debug/fix Vision Service, then re-test all 4 scene recognition tasks
+### Project Files
 
-**Resolution:** Once Vision Service face detection is fixed, scene recognition should work without plugin changes.
+- **Source:** `gorpc/internal/`
+- **Tests:** `gorpc/tests/` and `tests/e2e/`
+- **Docs:** `docs/`
 
 ---
 
-## Session Bootstrap Information
-
-**For next session:** See `SESSION_RESUME.md` for current task status, blockers, and continuation points.
-
-**Git History:** Original 3,869-line planning document in commit history (git log --all --grep="comprehensive refactor plan")
-
-**Project Files:** All source in `gorpc/internal/`, tests in `gorpc/tests/` and `tests/e2e/`
-
----
-
-**Last Updated:** 2025-11-13
-**Status:** Production-ready (9/11 tasks), Vision Service integration pending
+**Last Updated:** 2025-11-27
+**Status:** Production-ready (13/14 tasks tested)
