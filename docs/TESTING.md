@@ -1,13 +1,13 @@
 # Testing Guide - Stash Compreface Plugin
 
-**Last Updated:** 2025-11-22
-**Test Coverage:** 12/13 tasks (92%)
+**Last Updated:** 2025-11-27
+**Test Coverage:** 13/14 tasks (93%)
 
 ---
 
 ## Overview
 
-This document describes the testing strategy, procedures, and results for the Stash Compreface plugin. Tests validate face recognition accuracy, batch processing, performance, and integration with external services (Compreface, Vision Service, Quality Service).
+This document describes the testing strategy, procedures, and results for the Stash Compreface plugin. Tests validate face recognition accuracy, batch processing, performance, and integration with external services (Compreface, Vision Service).
 
 ### Test Categories
 
@@ -37,7 +37,6 @@ This document describes the testing strategy, procedures, and results for the St
 - Compreface API client operations (`internal/compreface/`)
 - GraphQL mutations and queries (`internal/stash/`)
 - Vision Service integration (`internal/vision/`)
-- Quality assessment routing (`internal/quality/`)
 - Business logic layer (`internal/rpc/`)
 
 ### Integration Testing Philosophy
@@ -48,8 +47,7 @@ This document describes the testing strategy, procedures, and results for the St
 
 - Stash instance running at `http://localhost:9999`
 - Compreface service at `http://localhost:8000`
-- Vision Service at `http://localhost:5010` (optional, for scene tests)
-- Quality Service at `http://localhost:8001` (optional)
+- Vision Service at `http://localhost:5010` (for scene/image recognition)
 
 **Test Data:**
 
@@ -468,14 +466,12 @@ tests/e2e/
 - Compreface HTTP client (for unit tests)
 - Stash GraphQL client (for unit tests)
 - Vision Service client (for unit tests)
-- Quality Service client (for unit tests)
 
 **Mock Implementations:**
 
 - `tests/mocks/compreface_mock.go` - Mock Compreface API responses
 - `tests/mocks/stash_mock.go` - Mock GraphQL operations
 - `tests/mocks/vision_mock.go` - Mock Vision Service jobs
-- `tests/mocks/quality_mock.go` - Mock quality assessments
 
 ### Fixture Management
 
@@ -500,36 +496,32 @@ func CreateTestPerformer() stash.Performer
 
 ### Current Status
 
-**Test Coverage:** 12/13 tasks (92%)
+**Test Coverage:** 13/14 tasks (93%)
 
-| Task                        | Status     | Notes                        |
-| --------------------------- | ---------- | ---------------------------- |
-| Synchronize Performers      | ✅ PASS    | 6 performers synced          |
-| Recognize Images (HQ)       | ✅ PASS    | 74% face detection rate      |
-| Recognize Images (LQ)       | ⏸️ PENDING | Awaiting Vision Service v2.0 |
-| Identify All Images         | ✅ PASS    | Batch identification         |
-| Identify Unscanned Images   | ✅ PASS    | 200 limit, 2 matches         |
-| Reset Unmatched Images      | ✅ PASS    | Cleanup operations           |
-| Recognize New Scenes        | ✅ PASS    | Vision Service v1.0.0        |
-| Recognize New Scene Sprites | ✅ PASS    | Sprite extraction working    |
-| Recognize All Scenes        | ✅ PASS    | Rescan all scenes            |
-| Recognize All Scene Sprites | ✅ PASS    | Sprite-based rescan          |
-| Reset Unmatched Scenes      | ✅ PASS    | Scene cleanup operations     |
-| Identify Single Image       | ✅ PASS    | Image 342, <5s               |
-| Create Performer from Image | ✅ PASS    | Working correctly            |
-| Identify Gallery            | ✅ PASS    | Gallery-scoped processing    |
+| Task                        | Status     | Notes                              |
+| --------------------------- | ---------- | ---------------------------------- |
+| Synchronize Performers      | ✅ PASS    | 6 performers synced                |
+| Recognize Images            | ✅ PASS    | Vision Service + embedding recog   |
+| Identify All Images         | ✅ PASS    | Batch identification               |
+| Identify Unscanned Images   | ✅ PASS    | 200 limit, 2 matches               |
+| Reset Unmatched Images      | ✅ PASS    | Cleanup operations                 |
+| Recognize New Scenes        | ✅ PASS    | Vision Service v1.0.0              |
+| Recognize New Scene Sprites | ✅ PASS    | Sprite extraction working          |
+| Recognize All Scenes        | ✅ PASS    | Rescan all scenes                  |
+| Recognize All Scene Sprites | ✅ PASS    | Sprite-based rescan                |
+| Reset Unmatched Scenes      | ✅ PASS    | Scene cleanup operations           |
+| Identify Single Image       | ✅ PASS    | Image 342, <5s                     |
+| Create Performer from Image | ✅ PASS    | Working correctly                  |
+| Identify Gallery            | ✅ PASS    | Gallery-scoped processing          |
 
-**Note:** Task numbering skips #13 - total 13 tasks but numbered 1-14 (no task #13).
+**New Feature:** Embedding-based recognition uses Vision Service 512-D ArcFace embeddings for faster matching.
 
 ### Known Issues
 
-**Recognize Images (LQ) - Pending Implementation:**
+**Minor Issues:**
 
-- **Status:** Awaiting Vision Service support for single image analysis
-- **Current:** Uses direct CompreFace (same as HQ mode)
-- **Future:** Will use Vision Service with lower quality thresholds
-- **Blocker:** Vision Service needs image processing capability (currently video-only)
-- **Impact:** LQ mode not differentiated from HQ mode
+- Some images naturally have no faces (expected ~26% no-face rate)
+- Threshold filtering may reject valid low-confidence matches (working as designed)
 
 **Resolved Issues:**
 
@@ -537,11 +529,7 @@ func CreateTestPerformer() stash.Performer
 - ✅ Occlusion detection working (~100% TPR on hands)
 - ✅ Sprite extraction functional
 - ✅ All scene recognition tasks passing
-
-**Minor Issues:**
-
-- Some images naturally have no faces (expected ~26% no-face rate)
-- Threshold filtering may reject valid low-confidence matches (working as designed)
+- ✅ Embedding-based recognition implemented
 
 ### Performance Metrics
 
@@ -628,10 +616,10 @@ docker logs -f stash | grep Compreface
 
 **Integration Test Additions:**
 
-- Quality Service integration suite
 - Concurrent task execution tests
 - Network failure scenarios
 - Rate limiting tests
+- Embedding recognition verification
 
 **E2E Test Enhancements:**
 
@@ -675,5 +663,5 @@ docker logs -f stash | grep Compreface
 
 ---
 
-**Last Updated:** 2025-11-13
-**Status:** 9/11 tasks tested and passing, 2/11 blocked by Vision Service
+**Last Updated:** 2025-11-27
+**Status:** 13/14 tasks tested and passing

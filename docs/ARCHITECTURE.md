@@ -1,13 +1,13 @@
 # Stash Compreface Plugin - Architecture
 
-**Version:** 2.0.0
-**Last Updated:** 2025-11-22
+**Version:** 2.1.0
+**Last Updated:** 2025-11-27
 
 ---
 
 ## Overview
 
-The Stash Compreface Plugin is a Go RPC plugin that provides face recognition and performer synchronization for Stash. It integrates with Compreface for face recognition/matching and optionally with stash-auto-vision for video scene face detection with occlusion filtering.
+The Stash Compreface Plugin is a Go RPC plugin that provides face recognition and performer synchronization for Stash. It integrates with Compreface for face recognition/matching and with stash-auto-vision (Vision Service) for video/image face detection with quality assessment and occlusion filtering.
 
 ---
 
@@ -15,539 +15,329 @@ The Stash Compreface Plugin is a Go RPC plugin that provides face recognition an
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Stash Instance                            │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │           Stash Compreface RPC Plugin (Go)                 │ │
-│  │                                                            │ │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌─────────────────┐ │ │
-│  │  │ RPC Server   │  │  GraphQL     │  │   Compreface    │ │ │
-│  │  │ (main.go)    │  │  Client      │  │   HTTP Client   │ │ │
-│  │  └──────────────┘  └──────────────┘  └─────────────────┘ │ │
-│  │         │                  │                   │          │ │
-│  │         └──────────────────┴───────────────────┘          │ │
-│  │                            │                               │ │
-│  └────────────────────────────┼───────────────────────────────┘ │
+│                        Stash Instance                           │
+│                                                                 │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │           Stash Compreface RPC Plugin (Go)                │  │
+│  │                                                           │  │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌────────────────┐  │  │
+│  │  │ RPC Server   │  │  GraphQL     │  │  Compreface    │  │  │
+│  │  │ (main.go)    │  │  Client      │  │  HTTP Client   │  │  │
+│  │  └──────────────┘  └──────────────┘  └────────────────┘  │  │
+│  │         │                  │                  │           │  │
+│  │         └──────────────────┴──────────────────┘           │  │
+│  │                            │                              │  │
+│  └────────────────────────────┼──────────────────────────────┘  │
 │                               │                                 │
 └───────────────────────────────┼─────────────────────────────────┘
                                 │
                     ┌───────────┴───────────┐
                     │                       │
             ┌───────▼────────┐      ┌──────▼───────┐
-            │   Compreface   │      │   Quality    │
+            │   Compreface   │      │    Vision    │
             │    Service     │      │   Service    │
-            │  (Face Recog)  │      │  (Optional)  │
+            │  (Face Recog)  │      │ (Detection)  │
             └────────────────┘      └──────────────┘
+```
+
+---
+
+## Package Structure
+
+```
+gorpc/
+├── main.go                    # RPC entry point (14 lines)
+└── internal/
+    ├── rpc/                   # Business logic (~2,400 lines)
+    │   ├── handlers.go        # Task routing
+    │   ├── service.go         # Service initialization
+    │   ├── images.go          # Image recognition workflows
+    │   ├── scenes.go          # Scene recognition workflows
+    │   ├── vision.go          # Vision Service integration
+    │   ├── performers.go      # Performer synchronization
+    │   ├── sprites.go         # VTT/sprite extraction
+    │   ├── types.go           # RPC type definitions
+    │   └── utils.go           # Shared utilities
+    ├── compreface/            # HTTP client (~765 lines)
+    │   ├── compreface.go      # API operations
+    │   ├── subjects.go        # Subject naming
+    │   └── types.go           # Request/response types
+    ├── stash/                 # GraphQL client (~1,100 lines)
+    │   ├── client.go          # GraphQL client setup
+    │   ├── images.go          # Image operations
+    │   ├── scenes.go          # Scene operations
+    │   ├── performers.go      # Performer operations
+    │   ├── galleries.go       # Gallery operations
+    │   ├── tags.go            # Tag operations with caching
+    │   └── types.go           # GraphQL types
+    ├── vision/                # Vision Service client (~460 lines)
+    │   ├── vision.go          # API client
+    │   └── types.go           # Vision types
+    └── config/                # Configuration (~380 lines)
+        └── config.go          # Settings, DNS resolution
+
+Total: ~5,500 lines Go
 ```
 
 ---
 
 ## Core Components
 
-### 1. RPC Server (`main.go`)
+### 1. RPC Task Router (`internal/rpc/handlers.go`)
 
-**Purpose:** Handles Stash plugin RPC calls and routes tasks
+Routes Stash plugin tasks to appropriate handlers.
 
-**Key Functions:**
+**Task Modes (14 total):**
 
-- `Run()` - Main task router (11 modes)
-- `Stop()` - Graceful shutdown
-- `errorOutput()` - Error response formatting
+| Mode | Description |
+|------|-------------|
+| `synchronizePerformers` | Sync performers with Compreface subjects |
+| `recognizeImages` | Detect and recognize faces in images |
+| `identifyImagesAll` | Identify all images (batch) |
+| `identifyImagesNew` | Identify new/unscanned images only |
+| `resetUnmatchedImages` | Remove scan tags from unmatched images |
+| `recognizeNewScenes` | New scenes via frame extraction |
+| `recognizeNewSceneSprites` | New scenes via sprite sheets |
+| `recognizeAllScenes` | All scenes via frame extraction |
+| `recognizeAllSceneSprites` | All scenes via sprite sheets |
+| `resetUnmatchedScenes` | Remove scan tags from unmatched scenes |
+| `identifyImage` | Single image identification |
+| `createPerformerFromImage` | Create performer from specific face |
+| `identifyGallery` | Process entire gallery |
 
-**Task Modes (13 total):**
+### 2. Configuration (`internal/config/`)
 
-1. `synchronizePerformers` - Sync performers with Compreface
-2. `recognizeImagesHQ` - High-quality image recognition
-3. `recognizeImagesLQ` - Low-quality image recognition
-4. `identifyImagesAll` - Identify all images
-5. `identifyImagesNew` - Identify new images only
-6. `resetUnmatchedImages` - Reset unmatched image tags
-7. `recognizeNewScenes` - New scenes via frame extraction
-8. `recognizeNewSceneSprites` - New scenes via sprite sheets
-9. `recognizeAllScenes` - All scenes via frame extraction (rescan)
-10. `recognizeAllSceneSprites` - All scenes via sprite sheets (rescan)
-11. `identifyImage` - Single image identification
-12. `createPerformerFromImage` - Create performer from face
-13. `identifyGallery` - Process entire gallery
+**Required Settings:**
+- `recognitionApiKey` - Compreface recognition API key
+- `detectionApiKey` - Compreface detection API key
 
-**Note:** Scene tasks 7-10 support scanPartial parameter for partial match rescanning and method-based face extraction (sprite vs video).
+**Optional Settings:**
+- `comprefaceUrl` - Default: `http://compreface:8000`
+- `visionServiceUrl` - Default: `http://vision-api:5010`
+- `cooldownSeconds` - Default: 10
+- `maxBatchSize` - Default: 20
+- `minSimilarity` - Default: 0.81
+- `minFaceSize` - Default: 64
+- `minConfidenceScore` - Default: 0.7
+- `minQualityScore` - Default: 0 (use component gates)
+- `minProcessingQualityScore` - Default: 0 (use component gates)
+- `enhanceQualityScoreTrigger` - Default: 0.5
 
-### 2. Configuration System (`config.go`)
+**Service Auto-Detection:**
+DNS-aware resolution supporting container names, hostnames, IPs, and localhost.
 
-**Purpose:** Load and validate plugin settings
+### 3. Compreface Client (`internal/compreface/`)
 
-**Key Functions:**
+**Recognition API:**
+- `RecognizeFacesFromBytes()` - Image-based recognition
+- `RecognizeEmbedding()` - Embedding-based recognition (512-D ArcFace)
+- `RecognizeEmbeddings()` - Batch embedding recognition
 
-- `loadPluginConfig()` - Fetch settings from Stash
-- `resolveServiceURL()` - DNS resolution with auto-detection
-- `getPluginConfiguration()` - GraphQL query for settings
-
-**Settings:**
-
-- Required: `recognitionApiKey`, `detectionApiKey`
-- Optional: `comprefaceUrl`, `visionServiceUrl`, `cooldownSeconds`, `maxBatchSize`, `minSimilarity`, `minFaceSize`, `scannedTagName`, `matchedTagName`
-
-**Auto-Detection:**
-
-- Compreface: `http://compreface:8000` (Docker Compose)
-- Vision Service: `http://vision-api:5010` (Docker Compose)
-
-### 3. Compreface HTTP Client (`compreface_client.go`)
-
-**Purpose:** Interface with Compreface REST API
-
-**API Methods:**
-
-**Recognition Service:**
-
-- `RecognizeFace(embedding)` - Match face to existing subjects
-- `AddSubject(subjectName, imageBytes)` - Create new subject
-- `AddExample(subjectName, imageBytes)` - Add example to subject
+**Subject Management:**
+- `AddSubjectFromBytes()` - Create new subject with face image
 - `ListSubjects()` - Get all subjects
-- `DeleteSubject(subjectName)` - Remove subject
-- `GetSubjectExamples(subjectName)` - List subject examples
+- `DeleteSubject()` - Remove subject
 
-**Detection Service:**
+**Detection API:**
+- `DetectFacesFromBytes()` - Detect faces in image
 
-- `DetectFaces(imageBytes)` - Detect faces in image
+**Embedding Recognition:**
+Uses Vision Service 512-D ArcFace embeddings for faster matching by sending pre-computed embeddings directly to Compreface, bypassing image re-processing. Falls back to image-based recognition if no match.
 
-**Verification Service:**
+### 4. GraphQL Client (`internal/stash/`)
 
-- `VerifyFace(sourceBytes, targetBytes)` - Compare two faces
+**Operations:**
+- **Images:** `FindImages()`, `GetImage()`, `UpdateImage()`
+- **Scenes:** `FindScenes()`, `GetScene()`, `UpdateScene()`
+- **Performers:** `FindPerformers()`, `GetPerformerByID()`, `CreatePerformer()`, `UpdatePerformer()`, `FindPerformerBySubjectName()`
+- **Galleries:** `FindGalleries()`, `GetGallery()`, `UpdateGallery()`
+- **Tags:** `FindOrCreateTag()` with thread-safe caching
 
-**Features:**
+**Tag Management:**
+Always pass complete tag lists (not deltas) when updating entities.
 
-- Base64 image encoding
-- Multipart form data uploads
-- Structured error handling
-- Configurable similarity threshold
+### 5. Vision Service Client (`internal/vision/`)
 
-### 4. GraphQL Client (Multiple Files)
+**API Version:** v1.0.0
 
-**Purpose:** Interface with Stash database via GraphQL
-
-**Tag Operations (`tags.go`):**
-
-- `findOrCreateTag(name)` - Get or create tag by name
-- Tag caching for performance
-
-**Image Operations (`images.go`):**
-
-- `findImages(filter, page, perPage)` - Query images
-- `getImage(id)` - Fetch single image
-- `updateImage(id, tags, performers)` - Update image metadata
-
-**Performer Operations (`performers.go`):**
-
-- `findPerformers(filter)` - Query performers
-- `getPerformer(id)` - Fetch single performer
-- `createPerformer(name, aliases)` - Create new performer
-- `updatePerformer(id, data)` - Update performer metadata
-
-**Scene Operations (`scenes.go`):**
-
-- `findScenes(filter, page, perPage)` - Query scenes
-- `getScene(id)` - Fetch single scene
-- `updateScenePerformers(id, performerIDs)` - Update scene metadata
-
-### 5. Core Business Logic
-
-**Face Detection (`face_detection.go`):**
-
-- Image processing and face detection
-- Bounding box validation
-- Quality filtering
-
-**Face Recognition (`face_recognition.go`):**
-
-- `recognizeImages(lowQuality)` - Batch image recognition
-- Face-to-performer matching
-- Subject creation for unknown faces
-
-**Performer Sync (`performers.go`):**
-
-- `synchronizePerformers()` - Sync performers to Compreface
-- Alias management ("Person {id} {random}" format)
-- Performer image detection
-
-**Image Identification (`images.go`):**
-
-- `identifyImages(newOnly)` - Match faces to performers
-- `identifyImage(id, createPerformer, faceIndex)` - Single image
-- `identifyGallery(id, createPerformer)` - Batch gallery
-
-**Scene Recognition (`scenes.go`):**
-
-- `recognizeNewScenes(useSprites)` - Video face recognition
-- Vision Service integration
-- Frame extraction and face processing
-
-### 6. Vision Service Client (`vision_service_client.go`)
-
-**Purpose:** Interface with stash-auto-vision service for video/image face detection
-
-**API Version:** v1.0.0 (breaking changes from v0.x)
-
-**API Methods:**
-
-- `SubmitJob(request)` - Submit video/image for processing
-- `GetJobStatus(jobID)` - Poll job progress
-- `GetResults(jobID)` - Retrieve detected faces
-- `WaitForCompletion(jobID, callback)` - Block until complete
-- `ExtractFrame(source, timestamp, enhancement)` - Extract frame/thumbnail
+**Operations:**
+- `SubmitJob()` - Submit video/image for processing
+- `WaitForCompletion()` - Poll until job complete
+- `ExtractFrame()` - Extract frame at timestamp with optional enhancement
 - `HealthCheck()` - Verify service availability
 
-**Key Changes in v1.0.0:**
+**Face Detection Features:**
+- InsightFace RetinaFace + ArcFace (512-D embeddings)
+- Quality assessment (size, pose, occlusion, sharpness)
+- Occlusion detection (masks, hands, glasses) - ResNet18 ~100% TPR
+- Face enhancement (CodeFormer/GFPGAN)
+- Face de-duplication via embedding similarity
+- Sprite-based detection (VTT + sprite images)
 
-- Breaking: `video_path` → `source` (supports images and videos)
-- Breaking: `min_confidence` → `face_min_confidence`
-- New: `face_min_quality` parameter for quality filtering
-- New: Face occlusion detection (masks, hands, glasses)
-- New: Face enhancement metadata (CodeFormer/GFPGAN)
-- New: Sprite-based detection (VTT + sprite images)
+### 6. Sprite Processing (`internal/rpc/sprites.go`)
 
-**Data Flow:**
-
-1. Plugin submits source (video/image/sprite) to Vision Service
-2. Service extracts frames/thumbnails (FFmpeg/PyAV/VTT parsing)
-3. Service detects faces using InsightFace (RetinaFace + ArcFace)
-4. Service performs occlusion detection using ResNet18 (~100% TPR on hands)
-5. Service optionally enhances low-quality faces (CodeFormer/GFPGAN)
-6. Service performs face de-duplication via embedding similarity
-7. Service returns: embeddings, quality scores, demographics, occlusion flags
-8. Plugin filters occluded faces
-9. Plugin matches embeddings to Compreface subjects
-10. Plugin creates performers and updates scenes/images
-
-**Status:** ✅ Production ready with v1.0.0 integration
-
-### 7. Quality Service (Optional)
-
-**Purpose:** Enhanced face quality assessment using dlib
-
-**Architecture:**
-
-- Standalone Python Flask service
-- Docker containerization
-- Optional dependency (not required for core functionality)
-
-**API Endpoints:**
-
-- `POST /quality/assess` - Assess face quality
-- `POST /quality/preprocess` - Enhance image
-- `POST /quality/detect` - Enhanced detection with quality metrics
-
-**Features:**
-
-- 68-point facial landmarks
-- Face alignment
-- Quality scoring (pose, blur, brightness)
-- Cropping with padding
-
-**Status:** Implemented and tested (Phase 1.5)
-
-### 8. Sprite Processing (`sprites.go`)
-
-**Purpose:** Extract face thumbnails from Stash sprite sheets
+Extracts face thumbnails from Stash sprite sheets for scene recognition.
 
 **Functions:**
-
-- `ParseVTT(content)` - Parse WebVTT timestamp→coordinate mappings
-- `FindCueForTimestamp(cues, timestamp)` - Locate sprite region
-- `FetchSpriteImage(url)` - Download sprite image
-- `FetchVTT(url)` - Download VTT file
-- `ExtractThumbnailFromSprite(img, cue)` - Extract thumbnail region
-- `ExtractFromSprite(spriteURL, vttURL, timestamp)` - Main workflow
-
-**Workflow:**
-
-1. Parse VTT file for timestamp→(x,y,w,h) mappings
-2. Download sprite image (grid of thumbnails)
-3. Extract specific thumbnail using VTT coordinates
-4. Return thumbnail bytes for face detection/recognition
-
-**Use Case:** Scene recognition with `useSprites=true` parameter
-
-**Status:** ✅ Production ready
-
-### 9. Gallery Operations (`galleries.go`)
-
-**Purpose:** Gallery-specific GraphQL operations
-
-**Functions:**
-
-- `FindGalleries(filter, page, perPage)` - Query with pagination
-- `GetGallery(galleryID)` - Retrieve single gallery
-- `UpdateGallery(galleryID, input)` - Update gallery
-- `AddTagToGallery(galleryID, tagID)` - Add tag (append)
-- `UpdateGalleryTags(galleryID, tagIDs)` - Replace all tags
-- `RemoveTagFromGallery(galleryID, tagID)` - Remove tag (preserve others)
-
-**Integration:** Used by `identifyGallery` task for gallery-scoped face recognition
-
-**Status:** ✅ Production ready
+- `ParseVTT()` - Parse WebVTT timestamp→coordinate mappings
+- `FetchSpriteImage()` - Download sprite image
+- `ExtractFromSprite()` - Extract thumbnail at timestamp
 
 ---
 
-## Data Flow
+## Data Flows
 
 ### Image Recognition Flow
 
 ```
-1. User triggers "Recognize Images (HQ)" task
-2. Plugin queries Stash for unscanned images (GraphQL)
-3. For each image:
-   a. Download image from Stash
-   b. Call Compreface Detection API → get faces
-   c. Filter faces by size and quality
-   d. For each detected face:
-      i. Call Compreface Recognition API → match existing subjects
-      ii. If no match → create new subject
-      iii. Create Stash performer for subject
-      iv. Link performer to image
-   e. Tag image as "Compreface Scanned"
-4. Apply cooldown period (default: 10 seconds)
-5. Repeat for next batch (default: 20 images)
+1. Query unscanned images (GraphQL)
+2. For each image:
+   a. Call Vision Service for face detection
+   b. For each face with 512-D embedding:
+      i.  Try embedding recognition (fast path)
+      ii. If no match, try image-based recognition
+      iii. If matched, link performer to image
+      iv. If no match, create new subject + performer
+   c. Tag image as "Compreface Scanned"
+3. Apply cooldown between batches
 ```
 
-### Performer Synchronization Flow
+### Scene Recognition Flow
 
 ```
-1. User triggers "Synchronize Performers" task
-2. Plugin queries all performers with images (GraphQL)
-3. For each performer:
-   a. Check for "Person ..." alias → already synced, skip
-   b. Download performer profile image from Stash
-   c. Call Compreface Detection API → detect face
-   d. Generate subject name: "Person {performer_id} {16-char-random}"
-   e. Call Compreface Add Subject API → create subject
-   f. Add subject name as performer alias (GraphQL)
-4. Apply cooldown period
-5. Repeat for next batch
+1. Query unprocessed scenes (GraphQL)
+2. For each scene:
+   a. Submit to Vision Service (video or sprite mode)
+   b. Vision Service extracts frames, detects faces, generates embeddings
+   c. For each unique face:
+      i.  Try embedding recognition first
+      ii. If no match, extract frame, crop face, try image-based
+      iii. Create performer if new face
+   d. Update scene performers and tags
+3. Apply cooldown between batches
 ```
 
-### Video Recognition Flow (Requires Vision Service)
+### Performer Sync Flow
 
 ```
-1. User triggers scene recognition task
-2. Plugin queries scenes based on task type (GraphQL)
-3. For each scene:
-   a. Submit video path to Vision Service
-   b. Vision Service:
-      i. Extract frames at intervals (FFmpeg)
-      ii. Detect faces in frames (InsightFace RetinaFace)
-      iii. Generate 512-D embeddings (InsightFace ArcFace)
-      iv. De-duplicate faces by embedding similarity
-      v. Select representative detection (best quality)
-   c. Plugin receives face results:
-      - Face ID
-      - 512-D embedding
-      - Representative detection (timestamp, bbox, quality)
-      - All detections
-   d. For each face:
-      i. Extract frame at representative timestamp
-      ii. Crop face from frame
-      iii. Submit to Compreface for recognition
-      iv. If matched → link performer to scene
-      v. If not matched → create new subject + performer
-   e. Tag scene as "Compreface Scanned"
-4. Apply cooldown period
-5. Repeat for next batch
+1. Query performers with "Person" name/alias pattern
+2. For each performer with image:
+   a. Download performer image
+   b. Detect face with Compreface
+   c. Generate subject name: "Person {id} {16-char-random}"
+   d. Create Compreface subject
+   e. Add subject name as performer alias
+3. Tag as "Compreface Synced"
 ```
 
 ---
 
 ## Subject Naming Convention
 
-### Format
+**Format:** `Person {stash_id} {16-char-random}`
 
-```
-Person {stash_id} {16-char-random}
-```
+**Example:** `Person 12345 ABC123XYZ456GHIJ`
 
-### Example
+**Implementation:** `internal/compreface/subjects.go:CreateSubjectName()`
 
-```
-Person 12345 ABC123XYZ456GHIJ
-```
+**Why This Format:**
+1. **Uniqueness** - Random suffix prevents collisions
+2. **Traceability** - Stash ID links back to source
+3. **Pattern Matching** - Regex: `^Person .*$`
 
-### Implementation
-
-**Go:**
-
-```go
-func randomSubject(length int, prefix string) string {
-    const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    b := make([]byte, length)
-    for i := range b {
-        b[i] = charset[rand.Intn(len(charset))]
-    }
-    return prefix + string(b)
-}
-
-// Usage:
-subject := randomSubject(16, fmt.Sprintf("Person %s ", imageID))
-```
-
-**Python (original):**
-
-```python
-def random_subject(length=16, prefix=""):
-    characters = string.ascii_uppercase + string.digits
-    random_string = "".join(random.choice(characters) for _ in range(length))
-    return f"{prefix}{random_string}"
-
-# Usage:
-subject = random_subject(16, f"Person {image['id']} ")
-```
-
-### Why This Format
-
-1. **Uniqueness:** Random suffix prevents collisions
-2. **Traceability:** Stash ID allows linking back to source
-3. **Compatibility:** Matches existing Python plugin format
-4. **Sync Support:** Pattern matching via regex: `^Person .*$`
+**CRITICAL:** Never change this format - existing Compreface databases depend on it.
 
 ---
 
 ## Performance Features
 
-### 1. Batching
+### Batching
 
-**Purpose:** Process items in chunks to prevent resource exhaustion
-
-**Configuration:**
-
-- Setting: `maxBatchSize` (default: 20)
-- Applied to: All batch operations (images, performers, scenes)
-
-**Implementation:**
+Process items in configurable chunks (default: 20) to prevent resource exhaustion.
 
 ```go
-batchSize := a.config.MaxBatchSize
 for page := 1; ; page++ {
-    items, total, err := a.fetchItems(page, batchSize)
-    if len(items) == 0 {
-        break
-    }
+    items, total, err := fetchItems(page, batchSize)
+    if len(items) == 0 { break }
     // Process batch...
+    s.applyCooldown()
 }
 ```
 
-### 2. Cooldown Periods
+### Cooldown Periods
 
-**Purpose:** Prevent GPU/CPU overheating during intensive operations
+Prevent GPU/CPU overheating during intensive operations. Default: 10 seconds between batches.
 
-**Configuration:**
+### Progress Reporting
 
-- Setting: `cooldownSeconds` (default: 10)
-- Applied after: Each batch completion
+Real-time feedback via `log.Progress()` updates Stash UI progress bar.
 
-**Implementation:**
+### Embedding-First Recognition
 
-```go
-func (a *ComprefaceAPI) applyCooldown() {
-    if a.config.CooldownSeconds > 0 {
-        log.Infof("Cooling down for %d seconds...", a.config.CooldownSeconds)
-        time.Sleep(time.Duration(a.config.CooldownSeconds) * time.Second)
-    }
-}
-```
-
-### 3. Progress Reporting
-
-**Purpose:** Provide real-time feedback on long-running tasks
-
-**Implementation:**
-
-```go
-progress := float64(current) / float64(total)
-log.Progress(progress) // Updates Stash UI progress bar
-```
-
-### 4. Task Cancellation
-
-**Purpose:** Allow users to stop long-running tasks gracefully
-
-**Implementation:**
-
-```go
-func (a *ComprefaceAPI) Stop(input struct{}, output *bool) error {
-    a.stopping = true
-    return nil
-}
-
-// Check in loops:
-if a.stopping {
-    return fmt.Errorf("operation cancelled")
-}
-```
+Try embedding recognition before image-based for ~100ms savings per face:
+1. Send 4KB embedding (vs 20-50KB image)
+2. Skip face cropping and re-detection
+3. Fall back to image-based if no match
 
 ---
 
 ## Error Handling
 
-### Strategy
+**Strategy:**
+1. **Graceful Degradation** - Continue on individual failures
+2. **Error Wrapping** - Add context with `fmt.Errorf`
+3. **Structured Logging** - `log.Error`, `log.Warn`, `log.Debug`
 
-1. **Graceful Degradation:** Continue processing on individual failures
-2. **Structured Logging:** Use `log.Error`, `log.Warn` for visibility
-3. **Error Wrapping:** Add context with `fmt.Errorf`
-4. **Error Tagging:** Mark failed items with error tags
-
-### Examples
-
-**Item-Level Error:**
-
+**Example:**
 ```go
 for _, image := range images {
-    err := a.processImage(image)
+    err := processImage(image)
     if err != nil {
         log.Warnf("Failed to process image %s: %v", image.ID, err)
-        a.addErrorTag(image.ID)
         continue // Continue with next image
     }
 }
 ```
 
-**Service Unavailable:**
+---
 
-```go
-if err := visionClient.HealthCheck(); err != nil {
-    return fmt.Errorf("Vision Service unavailable: %w", err)
-}
-```
+## Quality Assessment
 
-**API Error:**
+Face quality is evaluated using component-based gates or composite scoring:
 
-```go
-if resp.StatusCode != 200 {
-    return &APIError{
-        StatusCode: resp.StatusCode,
-        Body:       string(body),
-    }
-}
-```
+**Component Gates (default when minQualityScore=0):**
+- Size: ≥ 0.2
+- Pose: ≥ 0.5
+- Occlusion: ≥ 0.6
+
+**Composite Mode (when minQualityScore>0):**
+- Single threshold for overall quality score
+
+**Two-Tier Quality:**
+- `minProcessingQualityScore` - Lower bar for recognition attempts
+- `minQualityScore` - Higher bar for subject creation
 
 ---
 
-## Testing Architecture
+## Testing
 
 See [TESTING.md](TESTING.md) for comprehensive testing procedures.
 
 **Test Levels:**
+1. **Unit Tests** - `gorpc/tests/unit/` - Component isolation with mocks
+2. **Integration Tests** - `gorpc/tests/integration/` - Live service interactions
+3. **E2E Tests** - `tests/e2e/` - Complete task workflows
 
-1. **Unit Tests:** Go test suite for core functions
-2. **Integration Tests:** Test against local Compreface
-3. **End-to-End Tests:** Full workflow testing
-4. **Performance Tests:** Batch processing, memory usage
+**Coverage:** 12/13 tasks verified (92%)
 
 ---
 
 ## Deployment
 
-### Binary Build
+### Build
 
 ```bash
+cd gorpc
 ./build.sh          # Current platform
 ./build.sh linux    # Linux amd64
 ./build.sh all      # All platforms
@@ -558,9 +348,9 @@ See [TESTING.md](TESTING.md) for comprehensive testing procedures.
 1. Copy plugin directory to Stash plugins folder
 2. Ensure binary is executable: `chmod +x gorpc/stash-compreface-rpc`
 3. Reload plugins in Stash UI
-4. Configure settings (API keys, URLs)
+4. Configure API keys in plugin settings
 
-### Docker Compose Integration
+### Docker Compose
 
 ```yaml
 services:
@@ -568,41 +358,19 @@ services:
     image: stashapp/stash:latest
     volumes:
       - ./plugins:/config/plugins
-    # ...
 
   compreface:
     image: exadel/compreface:latest
     ports:
       - "8000:8000"
-    # ...
+
+  vision-api:
+    image: stash-auto-vision:latest
+    ports:
+      - "5010:5010"
 ```
 
-**Plugin auto-detects** Compreface at `http://compreface:8000` when URL not configured.
-
----
-
-## Future Enhancements
-
-### Vision Service Integration
-
-**Status:** Client complete, service implementation deferred
-
-**When Available:**
-
-- Enhanced video face recognition
-- Frame extraction with adaptive sampling
-- InsightFace 512-D embeddings (higher accuracy than dlib 128-D)
-- Scene segmentation support
-
-### UI Plugin
-
-**Status:** Not started (Phase 7 - optional)
-
-**Goals:**
-
-- React-based face selection modal
-- Create performers from detected faces in UI
-- Real-time job progress visualization
+Plugin auto-detects services at `http://compreface:8000` and `http://vision-api:5010`.
 
 ---
 
