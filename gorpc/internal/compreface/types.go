@@ -101,3 +101,29 @@ type FaceListItem struct {
 type FaceListResponse struct {
 	Faces []FaceListItem `json:"faces"`
 }
+
+// ============================================================================
+// Embedding-Based Recognition Types
+// ============================================================================
+
+// EmbeddingRecognitionRequest for embedding-based recognition
+type EmbeddingRecognitionRequest struct {
+	Embeddings [][]float64 `json:"embeddings"`
+}
+
+// EmbeddingSimilarity represents a subject match from embedding recognition
+type EmbeddingSimilarity struct {
+	Subject    string  `json:"subject"`
+	Similarity float64 `json:"similarity"`
+}
+
+// EmbeddingResult contains the result for a single embedding
+type EmbeddingResult struct {
+	Embedding    []float64             `json:"embedding"`
+	Similarities []EmbeddingSimilarity `json:"similarities"`
+}
+
+// EmbeddingRecognitionResponse is the response from embedding recognition API
+type EmbeddingRecognitionResponse struct {
+	Result []EmbeddingResult `json:"result"`
+}

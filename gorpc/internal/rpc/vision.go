@@ -171,6 +171,25 @@ func (s *Service) processFace(visionClient *vision.VisionServiceClient, ctx Face
 		return "", nil
 	}
 
+	// Try embedding-based recognition first (if 512-D embedding available)
+	if len(face.Embedding) == 512 {
+		performerID, similarity, err := s.recognizeByEmbedding(face.Embedding)
+		if err != nil {
+			log.Debugf("Face %s: Embedding recognition failed: %v, trying image-based", face.FaceID, err)
+		} else if performerID != "" {
+			// Get performer details for logging
+			performerName := "Undetermined"
+			performer, err := stash.GetPerformerByID(s.graphqlClient, performerID)
+			if err == nil && performer != nil {
+				performerName = performer.Name
+			}
+			log.Infof("Face %s: Matched via embedding (name: %s, similarity: %.2f)", face.FaceID, performerName, similarity)
+			return performerID, nil
+		} else {
+			log.Debugf("Face %s: No embedding match found, trying image-based", face.FaceID)
+		}
+	}
+
 	// Extract frame/thumbnail based on context
 	var frameBytes []byte
 	var err error
@@ -395,4 +414,33 @@ func (s *Service) assessFaceQuality(quality *vision.QualityResult, minComposite 
 	}
 
 	return result
+}
+
+// ============================================================================
+// Embedding-Based Recognition
+// ============================================================================
+
+// recognizeByEmbedding attempts to match a face using its pre-computed embedding.
+// Returns performer ID and similarity if matched, empty string if no match.
+func (s *Service) recognizeByEmbedding(embedding []float64) (graphql.ID, float64, error) {
+	resp, err := s.comprefaceClient.RecognizeEmbedding(embedding, 1)
+	if err != nil {
+		return "", 0, err
+	}
+
+	if len(resp.Result) > 0 && len(resp.Result[0].Similarities) > 0 {
+		best := resp.Result[0].Similarities[0]
+		log.Debugf("Embedding recognition best match: subject=%s, similarity=%.2f", best.Subject, best.Similarity)
+		if best.Similarity >= s.config.MinSimilarity {
+			// Find performer by subject name
+			performerID, err := stash.FindPerformerBySubjectName(s.graphqlClient, best.Subject)
+			if err != nil {
+				return "", 0, fmt.Errorf("failed to find performer for subject %s: %w", best.Subject, err)
+			}
+			if performerID != "" {
+				return performerID, best.Similarity, nil
+			}
+		}
+	}
+	return "", 0, nil
 }

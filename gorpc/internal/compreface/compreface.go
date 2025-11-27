@@ -474,3 +474,67 @@ func (c *Client) SubjectImageURL(imageID string) string {
 	return fmt.Sprintf("%s/api/v1/static/%s/images/%s",
 		c.BaseURL, c.RecognitionKey, imageID)
 }
+
+// ============================================================================
+// Embedding-Based Recognition
+// ============================================================================
+
+// RecognizeEmbedding performs recognition using a pre-computed embedding
+// POST /api/v1/recognition/embeddings/recognize?prediction_count=<n>
+func (c *Client) RecognizeEmbedding(embedding []float64, predictionCount int) (*EmbeddingRecognitionResponse, error) {
+	return c.RecognizeEmbeddings([][]float64{embedding}, predictionCount)
+}
+
+// RecognizeEmbeddings performs batch recognition for multiple embeddings
+// POST /api/v1/recognition/embeddings/recognize?prediction_count=<n>
+func (c *Client) RecognizeEmbeddings(embeddings [][]float64, predictionCount int) (*EmbeddingRecognitionResponse, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/recognition/embeddings/recognize?prediction_count=%d", c.BaseURL, predictionCount)
+
+	// Create request body
+	reqBody := EmbeddingRecognitionRequest{
+		Embeddings: embeddings,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Create request
+	req, err := http.NewRequest("POST", reqURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", c.RecognitionKey)
+
+	// Send request
+	log.Tracef("RecognizeEmbeddings: POST %s (%d embeddings)", reqURL, len(embeddings))
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Check status code
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	// Parse response
+	var recognition EmbeddingRecognitionResponse
+	err = json.Unmarshal(respBody, &recognition)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	log.Debugf("RecognizeEmbeddings: Got results for %d embedding(s)", len(recognition.Result))
+	return &recognition, nil
+}
