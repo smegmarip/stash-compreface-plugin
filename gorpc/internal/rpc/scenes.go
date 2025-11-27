@@ -1,16 +1,12 @@
 package rpc
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"image"
-	"image/jpeg"
 
 	graphql "github.com/hasura/go-graphql-client"
 	"github.com/stashapp/stash/pkg/plugin/common/log"
 
-	"github.com/smegmarip/stash-compreface-plugin/internal/compreface"
 	"github.com/smegmarip/stash-compreface-plugin/internal/stash"
 	"github.com/smegmarip/stash-compreface-plugin/internal/vision"
 )
@@ -234,7 +230,11 @@ func (s *Service) processScene(visionClient *vision.VisionServiceClient, scene s
 	facesProcessed := 0 // Faces that were either matched or created as new subjects
 
 	for _, face := range results.Faces.Faces {
-		performerID, err := s.processSceneFace(visionClient, scene, face, requestMetadata)
+		ctx := FaceProcessingContext{
+			Scene:    &scene,
+			SourceID: string(scene.ID),
+		}
+		performerID, err := s.processFace(visionClient, ctx, face, requestMetadata)
 		if err != nil {
 			log.Warnf("Failed to process face %s: %v", face.FaceID, err)
 			continue
@@ -269,192 +269,6 @@ func (s *Service) processScene(visionClient *vision.VisionServiceClient, scene s
 	}
 
 	return nil
-}
-
-// processSceneFace processes a single detected face from Vision Service
-func (s *Service) processSceneFace(visionClient *vision.VisionServiceClient, scene stash.Scene, face vision.VisionFace, metadata vision.ResultMetadata) (graphql.ID, error) {
-	// Get the representative detection (best quality frame)
-	det := face.RepresentativeDetection
-
-	// check for null
-	isEnhancedFace := det.Enhanced
-	var frameEnhancement *vision.EnhancementParameters
-	if metadata.FrameEnhancement != nil && isEnhancedFace {
-		frameEnhancement = metadata.FrameEnhancement
-	}
-
-	// Assess face quality for recognition attempt (lower bar)
-	qr := s.assessFaceQuality(det.Quality, s.config.MinProcessingQualityScore)
-
-	log.Debugf("Processing face %s: timestamp=%.2fs, confidence=%.2f, quality=%.2f, size=%.2f, pose=%.2f, occlusion=%.2f, sharpness=%.2f, enhanced=%v, method=%s",
-		face.FaceID, det.Timestamp, det.Confidence, qr.Composite, qr.Size, qr.Pose, qr.Occlusion, qr.Sharpness, isEnhancedFace, metadata.Method)
-
-	if !qr.Acceptable {
-		log.Debugf("Skipping face %s: %s", face.FaceID, qr.Reason)
-		return "", nil
-	}
-
-	// Extract frame/thumbnail based on detection method
-	var frameBytes []byte
-	var err error
-
-	if metadata.Method == "sprites" {
-		// Extract thumbnail from sprite image
-		spriteVTT := s.NormalizeHost(scene.Paths.VTT)
-		spriteImage := s.NormalizeHost(scene.Paths.Sprite)
-
-		log.Debugf("Extracting face from sprite: vtt=%s, sprite=%s, timestamp=%.2f",
-			spriteVTT, spriteImage, det.Timestamp)
-		frameBytes, err = ExtractFromSprite(spriteImage, spriteVTT, det.Timestamp)
-		if err != nil {
-			return "", fmt.Errorf("failed to extract sprite thumbnail at %.2fs: %w", det.Timestamp, err)
-		}
-	} else {
-		// Extract frame from video at the representative detection timestamp
-		videoPath := scene.Files[0].Path
-		frameBytes, err = visionClient.ExtractFrame(videoPath, det.Timestamp, frameEnhancement)
-		if err != nil {
-			return "", fmt.Errorf("failed to extract frame at %.2fs: %w", det.Timestamp, err)
-		}
-	}
-
-	// Crop face from frame using bounding box
-	faceCrop, err := s.cropFaceFromFrame(frameBytes, det.BBox)
-	if err != nil {
-		if faceCrop != nil {
-			log.Warnf("Using uncropped frame for face %s due to cropping error: %v", face.FaceID, err)
-		} else {
-			return "", fmt.Errorf("failed to crop face: %w", err)
-		}
-	}
-
-	log.Debugf("Extracted and cropped face from frame (%.0f bytes)", len(faceCrop))
-
-	// Try to recognize face in Compreface
-	recognitionResp, err := s.comprefaceClient.RecognizeFacesFromBytes(faceCrop, "face.jpg")
-	if err != nil {
-		return "", fmt.Errorf("compreface recognition failed: %w", err)
-	}
-
-	// Check if face matched to existing subject
-	if len(recognitionResp.Result) > 0 && len(recognitionResp.Result[0].Subjects) > 0 {
-		// Face matched to existing subject
-		bestMatch := recognitionResp.Result[0].Subjects[0] // Highest similarity match
-		if bestMatch.Similarity < s.config.MinSimilarity {
-			// Similarity too low, treat as no match
-			goto createNewSubject
-		}
-
-		subject := bestMatch.Subject
-		similarity := bestMatch.Similarity
-
-		log.Debugf("Face %s matched to Compreface subject %s (similarity: %.2f)", face.FaceID, subject, similarity)
-
-		// Find performer with matching alias
-		performerID, err := stash.FindPerformerBySubjectName(s.graphqlClient, subject)
-		if err != nil {
-			return "", fmt.Errorf("failed to find performer for subject %s: %w", subject, err)
-		}
-
-		if performerID != "" {
-			// Get performer details for logging
-			performerName := "Undetermined"
-			performer, err := stash.GetPerformerByID(s.graphqlClient, performerID)
-			if err == nil && performer != nil {
-				performerName = performer.Name
-			}
-			log.Infof("Matched face %s to performer (name: %s, subject: %s, similarity: %.2f)",
-				face.FaceID, performerName, subject, similarity)
-			return performerID, nil
-		}
-
-		log.Warnf("Subject %s exists in Compreface but no matching performer found", subject)
-		return "", nil
-	}
-
-createNewSubject:
-	// Check quality for subject creation (higher bar than recognition)
-	qrCreate := s.assessFaceQuality(det.Quality, s.config.MinQualityScore)
-	if !qrCreate.Acceptable {
-		log.Debugf("Skipping face %s for subject creation: %s", face.FaceID, qrCreate.Reason)
-		return "", nil
-	}
-
-	// No match - create new subject and performer
-	subjectName := createSubjectName(string(scene.ID), face.FaceID)
-
-	log.Debugf("Creating new subject for unmatched face %s (composite=%.2f)", face.FaceID, qrCreate.Composite)
-
-	// Add subject to Compreface with face crop
-	addResponse, err := s.comprefaceClient.AddSubjectFromBytes(subjectName, faceCrop, "face.jpg")
-	if err != nil {
-		return "", fmt.Errorf("failed to add subject to Compreface: %w", err)
-	}
-
-	log.Debugf("Created Compreface subject: %s (image_id: %s)", addResponse.Subject, addResponse.ImageID)
-
-	// Create performer in Stash with demographics if available
-	var gender string
-	var age int
-	if face.Demographics != nil {
-		gender = face.Demographics.Gender
-		age = face.Demographics.Age
-	}
-
-	performerSubject := stash.PerformerSubject{
-		Name:   subjectName,
-		Age:    age,
-		Gender: gender,
-		Image:  s.comprefaceClient.SubjectImageURL(addResponse.ImageID),
-	}
-
-	performer, err := s.createPerformerWithDetails(performerSubject)
-	if err != nil {
-		return "", fmt.Errorf("failed to create performer: %w", err)
-	}
-
-	log.Infof("Created new performer %s for unknown face %s (subject: %s, age: %d, gender: %s)",
-		performer.Name, face.FaceID, subjectName, age, gender)
-
-	return graphql.ID(performer.ID), nil
-}
-
-// cropFaceFromFrame crops a face region from a frame using the bounding box
-func (s *Service) cropFaceFromFrame(frameBytes []byte, bbox vision.VisionBoundingBox) ([]byte, error) {
-	// Decode frame bytes to image.Image
-	img, _, err := image.Decode(bytes.NewReader(frameBytes))
-	if err != nil {
-		return frameBytes, fmt.Errorf("failed to decode frame: %w", err)
-	}
-
-	// Convert Vision bbox to Compreface bbox (same structure, just different types)
-	cfBox := compreface.BoundingBox{
-		XMin: bbox.XMin,
-		YMin: bbox.YMin,
-		XMax: bbox.XMax,
-		YMax: bbox.YMax,
-	}
-
-	// Reuse existing cropping logic with padding
-	padding := 10 // Match images.go behavior
-	cropped, err := s.extractBoxImage(img, cfBox, padding)
-	if err != nil {
-		return frameBytes, fmt.Errorf("failed to crop face region: %w", err)
-	}
-
-	// Encode cropped image back to JPEG bytes
-	buf := new(bytes.Buffer)
-	if err := jpeg.Encode(buf, cropped, &jpeg.Options{Quality: 90}); err != nil {
-		return frameBytes, fmt.Errorf("failed to encode cropped face: %w", err)
-	}
-
-	return buf.Bytes(), nil
-}
-
-// createSubjectName creates a unique subject name for Compreface
-// Format: "Person {scene_id} {random}"
-func createSubjectName(sceneID, _ string) string {
-	return compreface.CreateSubjectName(sceneID)
 }
 
 // applySceneCompletionTags applies partial/complete tags based on face processing results

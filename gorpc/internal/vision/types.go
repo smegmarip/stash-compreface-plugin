@@ -18,9 +18,9 @@ type VisionServiceClient struct {
 
 // AnalyzeRequest represents job submission parameters (matching Vision API schema)
 type AnalyzeRequest struct {
-	Source         string  `json:"source"`                    // Path, URL, or image source
-	SourceType     string  `json:"source_type,omitempty"`     // video, image, url (auto-detected if omitted)
-	SceneID        string  `json:"scene_id"`
+	Source         string  `json:"source"`                // Path, URL, or image source
+	SourceType     string  `json:"source_type,omitempty"` // video, image, url (auto-detected if omitted)
+	SourceID       string  `json:"source_id"`
 	JobID          string  `json:"job_id,omitempty"`
 	ProcessingMode string  `json:"processing_mode,omitempty"` // sequential or parallel
 	Modules        Modules `json:"modules"`
@@ -78,7 +78,7 @@ type JobStatus struct {
 // AnalyzeResults represents the full analysis results from Vision API
 type AnalyzeResults struct {
 	JobID     string        `json:"job_id"`
-	SceneID   string        `json:"scene_id"`
+	SourceID  string        `json:"source_id"`
 	Status    string        `json:"status"`
 	Faces     *FacesResults `json:"faces,omitempty"`     // Faces module results
 	Scenes    interface{}   `json:"scenes,omitempty"`    // Scenes module results (not used yet)
@@ -90,7 +90,7 @@ type AnalyzeResults struct {
 // FacesResults represents face analysis results from the Faces service
 type FacesResults struct {
 	JobID    string         `json:"job_id"`
-	SceneID  string         `json:"scene_id"`
+	SourceID string         `json:"source_id"`
 	Status   string         `json:"status"`
 	Faces    []VisionFace   `json:"faces"`
 	Metadata ResultMetadata `json:"metadata"`

@@ -56,7 +56,7 @@ func (c *VisionServiceClient) SubmitJob(req AnalyzeRequest) (*JobResponse, error
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	log.Debugf("Submitting Vision Service job to %s: scene_id=%s, source=%s", url, req.SceneID, req.Source)
+	log.Debugf("Submitting Vision Service job to %s: source_id=%s, source=%s", url, req.SourceID, req.Source)
 
 	resp, err := c.HTTPClient.Post(url, "application/json", bytes.NewBuffer(body))
 	if err != nil {
@@ -212,7 +212,7 @@ func (c *VisionServiceClient) HealthCheck() error {
 func BuildAnalyzeRequest(videoPath, sceneID string, facesParameters FacesParameters) AnalyzeRequest {
 	return AnalyzeRequest{
 		Source:         videoPath, // Renamed from VideoPath (breaking change v1.0.0)
-		SceneID:        sceneID,
+		SourceID:       sceneID,
 		ProcessingMode: "sequential", // Sequential processing to avoid GPU memory contention
 		Modules: Modules{
 			Faces: FacesModule{
