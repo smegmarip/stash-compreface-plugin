@@ -3,8 +3,11 @@
 Face recognition and performer synchronization for Stash using Compreface.
 
 **Version:** 2.1.0
+
 **Interface:** RPC (Go)
+
 **Status:** Production-Ready (13/14 tasks tested, 93% coverage)
+
 **Repository:** https://github.com/smegmarip/stash-compreface-plugin
 
 ---
