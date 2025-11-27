@@ -147,15 +147,10 @@ Navigate to Settings → Plugins → Compreface and configure:
   - Leave empty to disable video recognition features
   - See [stash-auto-vision](../stash-auto-vision) for setup and configuration
 
-- **Quality Service URL** - URL of stash-face-quality for enhanced quality assessment
-  - Default: `http://stash-face-quality:6001` (auto-detected)
-  - Leave empty to disable enhanced quality assessment
-  - See [face-quality-service/](face-quality-service/) for setup
-
 **Service URL Auto-Detection:**
 All service URLs support automatic DNS resolution:
 
-- **Container names** (e.g., `compreface`, `stash-face-quality`) → DNS lookup in Docker networks
+- **Container names** (e.g., `compreface`, `vision-api`) → DNS lookup in Docker networks
 - **Hostnames** (e.g., `myserver.local`) → DNS resolution
 - **IP addresses** (e.g., `192.168.1.100`) → Used as-is
 - **localhost** → Used as-is

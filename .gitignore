@@ -48,11 +48,6 @@ ENV/
 env/
 .venv/
 
-# Python quality service
-face-quality-service/venv/
-face-quality-service/*.dat
-face-quality-service/models/
-
 # IDE
 .vscode/
 .idea/
@@ -88,9 +83,6 @@ session-history.txt
 .claude/
 .mailmap
 .history
-
-# Archive and old versions
-archive/
 
 # Build artifacts
 gorpc/.golangci.yml.bak

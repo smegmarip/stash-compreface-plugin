@@ -69,12 +69,11 @@ tests/
 
 | Package             | Lines | Unit Tests  | Integration   | E2E           | Priority |
 | ------------------- | ----- | ----------- | ------------- | ------------- | -------- |
-| internal/rpc        | 869   | ✅ Required | ✅ Required   | ✅ Required   | **HIGH** |
-| internal/compreface | 573   | ✅ Required | ✅ Required   | ⚠️ Optional   | **HIGH** |
-| internal/stash      | 709   | ✅ Required | ✅ Required   | ⚠️ Optional   | **HIGH** |
-| internal/vision     | 412   | ✅ Required | ✅ Required   | ⚠️ Optional   | MEDIUM   |
-| internal/quality    | 1,416 | ✅ Required | ⚠️ Optional   | ⚠️ Optional   | MEDIUM   |
-| internal/config     | 226   | ✅ Required | ⚠️ Optional   | ⚠️ Optional   | HIGH     |
+| internal/rpc        | ~900  | ✅ Required | ✅ Required   | ✅ Required   | **HIGH** |
+| internal/compreface | ~600  | ✅ Required | ✅ Required   | ⚠️ Optional   | **HIGH** |
+| internal/stash      | ~700  | ✅ Required | ✅ Required   | ⚠️ Optional   | **HIGH** |
+| internal/vision     | ~450  | ✅ Required | ✅ Required   | ⚠️ Optional   | MEDIUM   |
+| internal/config     | ~230  | ✅ Required | ⚠️ Optional   | ⚠️ Optional   | HIGH     |
 | pkg/utils           | ~200  | ✅ Required | ❌ Not Needed | ❌ Not Needed | MEDIUM   |
 
 **Legend**:
@@ -128,7 +127,6 @@ func TestCreateSubjectName(t *testing.T) {
 - Running Compreface (localhost:8000)
 - Running Stash (localhost:9999)
 - Running Vision Service (localhost:5010) - optional
-- Running Quality Service (localhost:6001) - optional
 
 **Example**:
 
@@ -352,7 +350,6 @@ docker-compose -f tests/docker-compose.yml up -d
 curl http://localhost:19999/graphql  # Stash
 curl http://localhost:18000/         # Compreface
 curl http://localhost:15000/health   # Vision
-curl http://localhost:16001/health   # Quality
 
 # Stop all services
 docker-compose -f tests/docker-compose.yml down

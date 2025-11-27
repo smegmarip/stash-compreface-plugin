@@ -52,8 +52,6 @@ rsync -av --delete \
     --include='gorpc/***' \
     --exclude='gorpc/tests/***' \
     --exclude='samples/***' \
-    --exclude='archive/***' \
-    --exclude='face-quality-service/***' \
     --exclude='docs/***' \
     --exclude='tests/***' \
     --exclude='.git/***' \
