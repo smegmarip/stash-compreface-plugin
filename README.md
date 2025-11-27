@@ -2,9 +2,9 @@
 
 Face recognition and performer synchronization for Stash using Compreface.
 
-**Version:** 2.0.0
+**Version:** 2.1.0
 **Interface:** RPC (Go)
-**Status:** Production-Ready (12/13 tasks tested, 92% coverage)
+**Status:** Production-Ready (13/14 tasks tested, 93% coverage)
 **Repository:** https://github.com/smegmarip/stash-compreface-plugin
 
 ---
@@ -14,7 +14,7 @@ Face recognition and performer synchronization for Stash using Compreface.
 ### Core Functionality
 
 - **Performer Synchronization** - Sync existing Stash performers with Compreface subjects
-- **Image Recognition** - Detect and group faces in images (HQ/LQ modes)
+- **Image Recognition** - Detect and group faces in images using Vision Service
 - **Image Identification** - Match faces to existing performers
 - **Gallery Processing** - Batch process all images in a gallery
 - **Single Image Operations** - Identify or create performers from individual images
@@ -26,7 +26,12 @@ Face recognition and performer synchronization for Stash using Compreface.
 - **Occlusion Filtering** - Automatic detection and filtering of masked/occluded faces
 - **Sprite Processing** - VTT parsing and thumbnail extraction from sprite sheets
 - **Face Enhancement** - Optional CodeFormer/GFPGAN enhancement for low-quality faces
-- **Status:** ✅ Fully functional with Vision Service v1.0.0
+
+### Embedding-Based Recognition
+
+- **Fast Matching** - Use pre-computed 512-D ArcFace embeddings for faster recognition
+- **Bandwidth Efficient** - Send 4KB embedding vs 20-50KB image
+- **Graceful Fallback** - Falls back to image-based recognition if no match
 
 ### Performance Features
 
@@ -34,12 +39,6 @@ Face recognition and performer synchronization for Stash using Compreface.
 - **Cooldown Periods** - Prevent hardware overheating (default: 10 seconds)
 - **Progress Reporting** - Real-time progress updates during batch operations
 - **Task Cancellation** - Graceful shutdown support
-
----
-
-## Description
-
-This plugin provides comprehensive face recognition for Stash using Compreface
 
 ---
 
@@ -53,8 +52,7 @@ This plugin provides comprehensive face recognition for Stash using Compreface
 
 ### Optional
 
-- **stash-auto-vision** - For video scene face recognition
-- **stash-face-quality** - For enhanced face quality assessment (dlib-based)
+- **stash-auto-vision** - For video/image face detection with quality assessment
 
 ---
 
@@ -140,11 +138,11 @@ Navigate to Settings → Plugins → Compreface and configure:
 
 **Optional Enhancement Services:**
 
-- **Vision Service URL** - URL of stash-auto-vision service for video face recognition
+- **Vision Service URL** - URL of stash-auto-vision service for face detection
 
   - Default: `http://vision-api:5010` (Docker auto-detected)
-  - Uses InsightFace for face detection with optional CodeFormer/GFPGAN enhancement
-  - Leave empty to disable video recognition features
+  - Uses InsightFace for face detection with quality assessment
+  - Provides 512-D embeddings for fast recognition
   - See [stash-auto-vision](../stash-auto-vision) for setup and configuration
 
 **Service URL Auto-Detection:**
@@ -163,23 +161,21 @@ All service URLs support automatic DNS resolution:
 
 All tasks accessible via Settings → Plugins → Compreface or GraphQL API.
 
-| Task                        | Status     | Description                              |
-| --------------------------- | ---------- | ---------------------------------------- |
-| Synchronize Performers      | ✅ Tested  | Sync performers with Compreface subjects |
-| Recognize Images (HQ)       | ✅ Tested  | Detect faces in high-quality images      |
-| Recognize Images (LQ)       | ✅ Tested  | Detect faces in low-quality images       |
-| Identify All Images         | ✅ Tested  | Match faces in all images                |
-| Identify Unscanned Images   | ✅ Tested  | Match faces in new images only           |
-| Reset Unmatched Images      | ✅ Tested  | Remove scan tags from unmatched          |
-| Identify Single Image       | ✅ Tested  | Process specific image                   |
-| Create Performer from Image | ✅ Tested  | Create performer from face               |
-| Identify Gallery            | ✅ Tested  | Process all gallery images               |
-| Recognize New Scenes        | ⏸️ Blocked | Video face recognition (unscanned only)  |
-| Recognize New Scene Sprites | ⏸️ Blocked | Sprite sheet processing (unscanned only) |
-| Recognize All Scenes        | ⏸️ Blocked | Video face recognition (rescan partial)  |
-| Recognize All Scene Sprites | ⏸️ Blocked | Sprite sheet processing (rescan partial) |
-
-**Note:** Scene recognition tasks blocked by Vision Service face detection issues (upstream). Plugin code is complete and ready once Vision Service is fixed.
+| Task                        | Status    | Description                              |
+| --------------------------- | --------- | ---------------------------------------- |
+| Synchronize Performers      | ✅ Tested | Sync performers with Compreface subjects |
+| Recognize Images            | ✅ Tested | Detect faces using Vision Service        |
+| Identify All Images         | ✅ Tested | Match faces in all images                |
+| Identify Unscanned Images   | ✅ Tested | Match faces in new images only           |
+| Reset Unmatched Images      | ✅ Tested | Remove scan tags from unmatched          |
+| Identify Single Image       | ✅ Tested | Process specific image                   |
+| Create Performer from Image | ✅ Tested | Create performer from face               |
+| Identify Gallery            | ✅ Tested | Process all gallery images               |
+| Recognize New Scenes        | ✅ Tested | Video face recognition (unscanned only)  |
+| Recognize New Scene Sprites | ✅ Tested | Sprite sheet processing (unscanned only) |
+| Recognize All Scenes        | ✅ Tested | Video face recognition (rescan partial)  |
+| Recognize All Scene Sprites | ✅ Tested | Sprite sheet processing (rescan partial) |
+| Reset Unmatched Scenes      | ✅ Tested | Remove scan tags from unmatched scenes   |
 
 ### Quick Start
 
@@ -191,7 +187,7 @@ All tasks accessible via Settings → Plugins → Compreface or GraphQL API.
 
 2. **Recognize faces in new images:**
 
-   - Run "Recognize Images (High Quality)" task
+   - Run "Recognize Images" task
    - Limit parameter recommended (e.g., limit=50)
    - Creates subjects for new faces
 
@@ -206,7 +202,7 @@ For detailed usage workflows, see [CLAUDE.md](CLAUDE.md).
 
 ## Testing
 
-**Test Coverage:** 9/11 tasks (82%)
+**Test Coverage:** 13/14 tasks (93%)
 
 - Unit tests: Component-level validation
 - Integration tests: Live service interactions
@@ -218,21 +214,21 @@ See [docs/TESTING.md](docs/TESTING.md) for comprehensive testing procedures and 
 
 ```bash
 # Unit tests
-cd gorpc && go test ./internal/... -v
+cd gorpc && go test ./tests/unit/... -v
 
 # E2E tests (requires services running)
-cd tests/e2e && ./run_suite.sh
+cd tests/e2e && ./comprehensive_tests.sh
 ```
 
 ---
 
 ## Development
 
-**Architecture:** Clean domain-driven design with ~5,000 lines of Go code
+**Architecture:** Clean domain-driven design with ~5,500 lines of Go code
 
 - **RPC Layer:** Business logic and task routing
 - **Repository Layer:** Type-safe GraphQL operations
-- **Service Layer:** External API clients (Compreface, Vision, Quality)
+- **Service Layer:** External API clients (Compreface, Vision Service)
 
 See [CLAUDE.md](CLAUDE.md) for development guide, architecture details, and implementation patterns.
 
@@ -251,9 +247,8 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for system design and component
 
 2. **"Vision Service unavailable"**
 
-   - Vision Service is optional for video features
+   - Vision Service is required for image/video recognition
    - Check service health: `curl http://localhost:5010/health`
-   - Or leave Vision Service URL empty to disable
 
 3. **No faces detected**
 
@@ -266,15 +261,6 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for system design and component
    - Ensure plugin is up to date
 
 **For more troubleshooting, see [docs/TESTING.md](docs/TESTING.md#troubleshooting).**
-
----
-
-## Known Issues
-
-- **Scene Recognition:** Blocked by Vision Service face detection issues (upstream project)
-- **Impact:** Video recognition tasks cannot be fully validated
-- **Workaround:** None currently - requires Vision Service fixes
-- **Status:** Plugin code complete and ready once Vision Service is fixed
 
 ---
 
