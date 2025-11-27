@@ -72,7 +72,7 @@ func TestBuildAnalyzeRequest(t *testing.T) {
 			)
 
 			assert.Equal(t, tt.videoPath, req.Source, "source should match")
-			assert.Equal(t, tt.sceneID, req.SceneID, "scene ID should match")
+			assert.Equal(t, tt.sceneID, req.SourceID, "scene ID should match")
 
 			// Verify modules are configured
 			assert.True(t, req.Modules.Faces.Enabled, "faces module should be enabled")
@@ -85,7 +85,7 @@ func TestBuildAnalyzeRequest_EmptyPaths(t *testing.T) {
 	req := vision.BuildAnalyzeRequest("", "", parameters)
 
 	assert.Empty(t, req.Source, "source should be empty")
-	assert.Empty(t, req.SceneID, "scene ID should be empty")
+	assert.Empty(t, req.SourceID, "source ID should be empty")
 	assert.True(t, req.Modules.Faces.Enabled, "faces module should be enabled")
 }
 
@@ -97,7 +97,7 @@ func TestBuildAnalyzeRequest_LongPaths(t *testing.T) {
 	req := vision.BuildAnalyzeRequest(longPath, longSceneID, parameters)
 
 	assert.Equal(t, longPath, req.Source, "should handle long paths")
-	assert.Equal(t, longSceneID, req.SceneID, "should handle long scene IDs")
+	assert.Equal(t, longSceneID, req.SourceID, "should handle long source IDs")
 }
 
 func TestBuildAnalyzeRequest_SpecialCharacters(t *testing.T) {
@@ -110,7 +110,7 @@ func TestBuildAnalyzeRequest_SpecialCharacters(t *testing.T) {
 	req := vision.BuildAnalyzeRequest(videoPath, sceneID, parameters)
 
 	assert.Equal(t, videoPath, req.Source, "should handle spaces in path")
-	assert.Equal(t, sceneID, req.SceneID, "should handle mixed characters")
+	assert.Equal(t, sceneID, req.SourceID, "should handle mixed characters")
 	assert.True(t, req.Modules.Faces.Enabled, "faces module should be enabled")
 }
 

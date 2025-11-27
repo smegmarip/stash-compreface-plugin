@@ -48,25 +48,24 @@ func TestPluginConfig_Defaults(t *testing.T) {
 func TestPluginConfig_Fields(t *testing.T) {
 	// Test that all required fields exist and can be set
 	cfg := &config.PluginConfig{
-		ComprefaceURL:             "http://compreface:8000",
-		RecognitionAPIKey:         "test-recognition-key",
-		DetectionAPIKey:           "test-detection-key",
-		VerificationAPIKey:        "test-verification-key",
-		VisionServiceURL:          "http://vision:5010",
-		QualityServiceURL:         "http://quality:6001",
-		CooldownSeconds:           15,
-		MaxBatchSize:              30,
-		MinSimilarity:             0.95,
-		MinFaceSize:               128,
-		MinConfidenceScore:        0.25,
-		MinQualityScore:           0.99,
-		MinProcessingQualityScore: 0.55,
+		ComprefaceURL:              "http://compreface:8000",
+		RecognitionAPIKey:          "test-recognition-key",
+		DetectionAPIKey:            "test-detection-key",
+		VerificationAPIKey:         "test-verification-key",
+		VisionServiceURL:           "http://vision:5010",
+		CooldownSeconds:            15,
+		MaxBatchSize:               30,
+		MinSimilarity:              0.95,
+		MinFaceSize:                128,
+		MinConfidenceScore:         0.25,
+		MinQualityScore:            0.99,
+		MinProcessingQualityScore:  0.55,
 		EnhanceQualityScoreTrigger: 0.75,
-		ScannedTagName:            "Custom Scanned",
-		MatchedTagName:            "Custom Matched",
-		PartialTagName:            "Custom Partial",
-		CompleteTagName:           "Custom Complete",
-		SyncedTagName:             "Custom Synced",
+		ScannedTagName:             "Custom Scanned",
+		MatchedTagName:             "Custom Matched",
+		PartialTagName:             "Custom Partial",
+		CompleteTagName:            "Custom Complete",
+		SyncedTagName:              "Custom Synced",
 	}
 
 	// Verify all fields are accessible
@@ -75,7 +74,6 @@ func TestPluginConfig_Fields(t *testing.T) {
 	assert.Equal(t, "test-detection-key", cfg.DetectionAPIKey)
 	assert.Equal(t, "test-verification-key", cfg.VerificationAPIKey)
 	assert.Equal(t, "http://vision:5010", cfg.VisionServiceURL)
-	assert.Equal(t, "http://quality:6001", cfg.QualityServiceURL)
 	assert.Equal(t, 15, cfg.CooldownSeconds)
 	assert.Equal(t, 30, cfg.MaxBatchSize)
 	assert.Equal(t, 0.95, cfg.MinSimilarity)

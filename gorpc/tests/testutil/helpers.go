@@ -14,7 +14,6 @@ type TestEnv struct {
 	StashURL         string
 	ComprefaceURL    string
 	VisionServiceURL string
-	QualityServiceURL string
 	RecognitionKey   string
 	DetectionKey     string
 	VerificationKey  string
@@ -24,15 +23,14 @@ type TestEnv struct {
 // SetupTestEnv creates a test environment with service URLs from environment variables
 func SetupTestEnv(t *testing.T) *TestEnv {
 	env := &TestEnv{
-		t:                 t,
-		StashURL:          getEnvOrDefault("STASH_URL", "http://localhost:9999"),
-		ComprefaceURL:     getEnvOrDefault("COMPREFACE_URL", "http://localhost:8000"),
-		VisionServiceURL:  getEnvOrDefault("VISION_SERVICE_URL", "http://localhost:5010"),
-		QualityServiceURL: getEnvOrDefault("QUALITY_SERVICE_URL", "http://localhost:6001"),
-		RecognitionKey:    os.Getenv("COMPREFACE_RECOGNITION_KEY"),
-		DetectionKey:      os.Getenv("COMPREFACE_DETECTION_KEY"),
-		VerificationKey:   os.Getenv("COMPREFACE_VERIFICATION_KEY"),
-		cleanup:           make([]func(), 0),
+		t:                t,
+		StashURL:         getEnvOrDefault("STASH_URL", "http://localhost:9999"),
+		ComprefaceURL:    getEnvOrDefault("COMPREFACE_URL", "http://localhost:8000"),
+		VisionServiceURL: getEnvOrDefault("VISION_SERVICE_URL", "http://localhost:5010"),
+		RecognitionKey:   os.Getenv("COMPREFACE_RECOGNITION_KEY"),
+		DetectionKey:     os.Getenv("COMPREFACE_DETECTION_KEY"),
+		VerificationKey:  os.Getenv("COMPREFACE_VERIFICATION_KEY"),
+		cleanup:          make([]func(), 0),
 	}
 
 	// Verify required environment variables for integration tests

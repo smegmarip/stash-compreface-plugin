@@ -118,7 +118,7 @@ func TestVisionIntegration_SubmitAndCheckJob(t *testing.T) {
 	// Build analyze request using the container path
 	req := vision.BuildAnalyzeRequest(testVideoContainerPath, "test-scene-123", parameters)
 	assert.Equal(t, testVideoContainerPath, req.Source)
-	assert.Equal(t, "test-scene-123", req.SceneID)
+	assert.Equal(t, "test-scene-123", req.SourceID)
 	assert.True(t, req.Modules.Faces.Enabled)
 
 	// Submit job
@@ -199,7 +199,7 @@ func TestVisionIntegration_BuildAnalyzeRequest(t *testing.T) {
 			)
 
 			assert.Equal(t, tt.videoPath, req.Source)
-			assert.Equal(t, tt.sceneID, req.SceneID)
+			assert.Equal(t, tt.sceneID, req.SourceID)
 			assert.True(t, req.Modules.Faces.Enabled)
 		})
 	}

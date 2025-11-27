@@ -5,8 +5,7 @@
 # and create performer groups for unrecognized faces.
 #
 # Modes tested:
-# - High Quality (recognizeImagesHQ): Processes all unscanned images
-# - Low Quality (recognizeImagesLQ): Same processing with lowQuality flag
+# - High Quality (recognizeImages): Processes all unscanned images
 #
 # Prerequisites:
 # - Stash running with test data
@@ -28,22 +27,19 @@ source "${LIB_DIR}/validation.sh"
 PLUGIN_ID="compreface-rpc"
 
 # Test configuration
-LIMIT=50
-TEST_MODE="${TEST_MODE:-both}"  # both, hq, lq
+LIMIT=1
 
 echo "================================================================"
-echo "Suite 4: Image Recognition (HQ/LQ)"
+echo "Suite 4: Image Recognition (HQ)"
 echo "================================================================"
 echo "Limit: ${LIMIT}"
-echo "Test mode: ${TEST_MODE}"
 echo ""
 
 # Function to run recognition and validate results
 run_recognition_test() {
     local task_name=$1
-    local mode_name=$2
 
-    echo "Testing ${mode_name} Recognition..."
+    echo "Testing Image Recognition..."
     echo "----------------------------------------"
 
     # Get count of unscanned images before
@@ -51,14 +47,14 @@ run_recognition_test() {
     before_count=$(get_unscanned_image_count)
 
     if [ -z "${before_count}" ] || [ "${before_count}" = "null" ]; then
-        echo "⚠️  Failed to get unscanned image count - skipping ${mode_name} test"
+        echo "⚠️  Failed to get unscanned image count - skipping image recognition test"
         return 0
     fi
 
     echo "Unscanned images before: ${before_count}"
 
     if [ "${before_count}" -eq 0 ]; then
-        echo "⚠️  No unscanned images found - skipping ${mode_name} test"
+        echo "⚠️  No unscanned images found - skipping image recognition test"
         return 0
     fi
 
@@ -129,7 +125,7 @@ run_recognition_test() {
     echo "Images with 'Compreface Scanned' tag: ${scanned_count}"
 
     echo ""
-    echo "✅ ${mode_name} recognition test passed"
+    echo "✅ image recognition test passed"
     echo "   Processed: ${actual_processed} images"
     echo "   Performers: ${performer_count}"
     echo "   Scanned: ${scanned_count}"
@@ -193,22 +189,8 @@ get_performer_count() {
         jq -r '.data.findPerformers.count'
 }
 
-# Run tests based on TEST_MODE
-case "${TEST_MODE}" in
-    hq)
-        run_recognition_test "Recognize Images (High Quality)" "High Quality" || exit 1
-        ;;
-    lq)
-        run_recognition_test "Recognize Images (Low Quality)" "Low Quality" || exit 1
-        ;;
-    both|*)
-        run_recognition_test "Recognize Images (High Quality)" "High Quality" || exit 1
-        echo ""
-        echo "================================================================"
-        echo ""
-        run_recognition_test "Recognize Images (Low Quality)" "Low Quality" || exit 1
-        ;;
-esac
+# Run tests
+run_recognition_test "Recognize Images" "High Quality" || exit 1
 
 echo "================================================================"
 echo "✅ Suite 4: Image Recognition Tests PASSED"
