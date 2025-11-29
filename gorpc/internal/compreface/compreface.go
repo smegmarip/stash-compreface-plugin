@@ -178,7 +178,7 @@ func (c *Client) RecognizeFaces(imagePath string) (*RecognitionResponse, error) 
 
 // RecognizeFacesFromBytes recognizes faces in image bytes
 func (c *Client) RecognizeFacesFromBytes(imageBytes []byte, filename string) (*RecognitionResponse, error) {
-	url := fmt.Sprintf("%s/api/v1/recognition/recognize", c.BaseURL)
+	url := fmt.Sprintf("%s/api/v1/recognition/recognize?face_plugins=landmarks,gender,age,calculator,mask", c.BaseURL)
 
 	// Create multipart form
 	body := &bytes.Buffer{}
