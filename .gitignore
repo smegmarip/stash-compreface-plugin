@@ -1,5 +1,4 @@
 # Binaries
-gorpc/stash-compreface-rpc
 gorpc/stash-compreface-plugin
 gorpc/test-build-temp
 *.exe
