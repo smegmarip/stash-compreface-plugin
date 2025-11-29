@@ -409,11 +409,10 @@ func (s *Service) identifyImage(imageID string, createPerformer bool, associateE
 
 				// Create performer in Stash with face image from Compreface
 				performerSubject := stash.PerformerSubject{
-					Name:    subjectName,
-					Aliases: []string{subjectName},
-					Age:     performer.Age,
-					Image:   imageURL,
-					Gender:  performer.Gender,
+					Name:   subjectName,
+					Age:    performer.Age,
+					Image:  imageURL,
+					Gender: performer.Gender,
 				}
 
 				performerID, err := stash.CreatePerformerWithImage(s.graphqlClient, performerSubject)
