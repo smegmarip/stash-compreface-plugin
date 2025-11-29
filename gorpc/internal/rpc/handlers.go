@@ -123,8 +123,9 @@ func (s *Service) Run(input common.PluginInput, output *common.PluginOutput) err
 		}
 		var _res *[]FaceIdentity
 		createPerformer := input.Args.Bool("createPerformer")
-		log.Infof("Identifying image: %s (createPerformer=%v)", imageID, createPerformer)
-		_res, err = s.identifyImage(imageID, createPerformer, nil)
+		associateExisting := input.Args.Bool("associateExisting")
+		log.Infof("Identifying image: %s (createPerformer=%v associateExisting=%v)", imageID, createPerformer, associateExisting)
+		_res, err = s.identifyImage(imageID, createPerformer, associateExisting, nil)
 		response := IdentifyImageResponse{Result: _res}
 		res, _err := json.Marshal(response)
 		if _err == nil {
@@ -145,9 +146,20 @@ func (s *Service) Run(input common.PluginInput, output *common.PluginOutput) err
 				imageID = v
 			}
 		}
-		faceIndex := input.Args.Int("faceIndex")
+		faceIndex := 0
+		if indexVal, ok := argsMap["faceIndex"]; ok {
+			switch v := indexVal.(type) {
+			case float64:
+				faceIndex = int(v)
+			case int:
+				faceIndex = v
+			case string:
+				faceIndex, _ = strconv.Atoi(v)
+			}
+		}
 		log.Infof("Creating performer from image: %s (faceIndex=%d)", imageID, faceIndex)
-		_, err = s.identifyImage(imageID, true, &faceIndex)
+		// When creating a performer, always associate with the image
+		_, err = s.identifyImage(imageID, true, true, &faceIndex)
 		outputStr = "Performer created from image"
 
 	case "identifyGallery":

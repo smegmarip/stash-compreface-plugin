@@ -99,6 +99,7 @@ tasks:
       mode: identifyImage
       imageId: null
       createPerformer: false
+      associateExisting: true
 
   - name: Create Performer from Image
     description: Create new performer from detected face in image

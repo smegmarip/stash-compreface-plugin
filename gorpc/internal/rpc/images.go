@@ -1,3 +1,4 @@
+//lint:file-ignore U1000 Ignore all unused code in this file
 package rpc
 
 import (
@@ -269,7 +270,7 @@ func (s *Service) recognizeImageFaces(visionClient *vision.VisionServiceClient, 
 }
 
 // identifyImage identifies faces in a single image and optionally creates performers
-func (s *Service) identifyImage(imageID string, createPerformer bool, faceIndex *int) (*[]FaceIdentity, error) {
+func (s *Service) identifyImage(imageID string, createPerformer bool, associateExisting bool, faceIndex *int) (*[]FaceIdentity, error) {
 	if s.stopping {
 		return nil, fmt.Errorf("operation cancelled")
 	}
@@ -366,12 +367,8 @@ func (s *Service) identifyImage(imageID string, createPerformer bool, faceIndex 
 			Gender: result.Gender.Value,
 		}
 
-		// Extract base64 face image for identity record
-		imageBase64Str, err := s.extractBase64FaceImage(imagePath, result.Box, 20)
-		if err != nil {
-			imageBase64Str = nil
-			log.Warnf("Failed to extract base64 face image for face %d: %v", i, err)
-		}
+		// Capture bounding box for client-side cropping
+		boundingBox := result.Box
 
 		// Calculate confidence as percentage
 		confidence := matchedSimilarity * 100
@@ -384,9 +381,22 @@ func (s *Service) identifyImage(imageID string, createPerformer bool, faceIndex 
 			if createPerformer {
 				log.Infof("Creating new performer for face %d (no match above threshold)", i)
 
-				// Add subject to Compreface with the full image
-				log.Debugf("Adding subject '%s' to Compreface", subjectName)
-				addResp, err := s.comprefaceClient.AddSubject(subjectName, imagePath)
+				// Read image and crop face region for multi-face image support
+				imageBytes, err := os.ReadFile(imagePath)
+				if err != nil {
+					log.Warnf("Failed to read image for face crop: %v", err)
+					continue
+				}
+
+				faceCrop, err := s.cropFaceBytes(imageBytes, result.Box, 20)
+				if err != nil {
+					log.Warnf("Failed to crop face %d: %v", i, err)
+					continue
+				}
+
+				// Add cropped face to Compreface
+				log.Debugf("Adding subject '%s' to Compreface (cropped face)", subjectName)
+				addResp, err := s.comprefaceClient.AddSubjectFromBytes(subjectName, faceCrop, "face.jpg")
 				if err != nil {
 					log.Warnf("Failed to add subject for face %d: %v", i, err)
 					continue
@@ -419,10 +429,10 @@ func (s *Service) identifyImage(imageID string, createPerformer bool, faceIndex 
 				log.Infof("Created performer %s for face %d", performerID, i)
 			}
 			identity := FaceIdentity{
-				ImageID:    imageID,
-				Performer:  performer,
-				Image:      imageBase64Str,
-				Confidence: &confidence,
+				ImageID:     imageID,
+				BoundingBox: &boundingBox,
+				Performer:   performer,
+				Confidence:  &confidence,
 			}
 			*identities = append(*identities, identity)
 			continue
@@ -445,10 +455,10 @@ func (s *Service) identifyImage(imageID string, createPerformer bool, faceIndex 
 				performer.ID = &performerIDStr
 				performer.Name = matchedSubject
 				identity := FaceIdentity{
-					ImageID:    imageID,
-					Performer:  performer,
-					Image:      imageBase64Str,
-					Confidence: &confidence,
+					ImageID:     imageID,
+					BoundingBox: &boundingBox,
+					Performer:   performer,
+					Confidence:  &confidence,
 				}
 				*identities = append(*identities, identity)
 			} else {
@@ -457,60 +467,65 @@ func (s *Service) identifyImage(imageID string, createPerformer bool, faceIndex 
 		}
 	}
 
-	// Step 4: Update image with matched performers
-	if len(performerIDs) > 0 {
-		log.Infof("Updating image %s with %d performer(s)", imageID, len(performerIDs))
-
-		// Get existing performers and merge
-		existingPerformerIDs := make([]graphql.ID, len(image.Performers))
-		for i, p := range image.Performers {
-			existingPerformerIDs[i] = p.ID
-		}
-
-		// Merge and deduplicate
-		allPerformerIDs := append(existingPerformerIDs, performerIDs...)
-		allPerformerIDs = utils.DeduplicateIDs(allPerformerIDs)
-
-		var performerIDStrs []string = make([]string, len(allPerformerIDs))
-		for i, id := range allPerformerIDs {
-			performerIDStrs[i] = string(id)
-		}
-
-		input := stash.ImageUpdateInput{
-			ID: string(imageID),
-		}
+	// Steps 4-7: Only update Stash if associateExisting is true
+	if associateExisting {
+		// Step 4: Update image with matched performers
 		if len(performerIDs) > 0 {
-			input.PerformerIds = performerIDStrs
-		}
-		err = stash.UpdateImage(s.graphqlClient, graphql.ID(imageID), input)
-		if err != nil {
-			log.Warnf("Failed to update image performers: %v", err)
-		}
-	}
+			log.Infof("Updating image %s with %d performer(s)", imageID, len(performerIDs))
 
-	// Step 5: Add scanned tag
-	scannedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.ScannedTagName, "Compreface Scanned")
-	if err == nil {
-		stash.AddTagToImage(s.graphqlClient, graphql.ID(imageID), scannedTagID)
-	}
+			// Get existing performers and merge
+			existingPerformerIDs := make([]graphql.ID, len(image.Performers))
+			for i, p := range image.Performers {
+				existingPerformerIDs[i] = p.ID
+			}
 
-	// Step 6: Add matched tag if performers were found
-	if foundMatch {
-		matchedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.MatchedTagName, "Compreface Matched")
+			// Merge and deduplicate
+			allPerformerIDs := append(existingPerformerIDs, performerIDs...)
+			allPerformerIDs = utils.DeduplicateIDs(allPerformerIDs)
+
+			var performerIDStrs []string = make([]string, len(allPerformerIDs))
+			for i, id := range allPerformerIDs {
+				performerIDStrs[i] = string(id)
+			}
+
+			input := stash.ImageUpdateInput{
+				ID: string(imageID),
+			}
+			if len(performerIDs) > 0 {
+				input.PerformerIds = performerIDStrs
+			}
+			err = stash.UpdateImage(s.graphqlClient, graphql.ID(imageID), input)
+			if err != nil {
+				log.Warnf("Failed to update image performers: %v", err)
+			}
+		}
+
+		// Step 5: Add scanned tag
+		scannedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.ScannedTagName, "Compreface Scanned")
 		if err == nil {
-			stash.AddTagToImage(s.graphqlClient, graphql.ID(imageID), matchedTagID)
+			stash.AddTagToImage(s.graphqlClient, graphql.ID(imageID), scannedTagID)
 		}
-	}
 
-	// Step 7: Update completion status
-	facesDetected := len(recognitionResp.Result)
-	facesMatched := len(performerIDs)
-	err = s.updateImageCompletionStatus(graphql.ID(imageID), facesDetected, facesMatched)
-	if err != nil {
-		log.Warnf("Failed to update completion status: %v", err)
-	}
+		// Step 6: Add matched tag if performers were found
+		if foundMatch {
+			matchedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.MatchedTagName, "Compreface Matched")
+			if err == nil {
+				stash.AddTagToImage(s.graphqlClient, graphql.ID(imageID), matchedTagID)
+			}
+		}
 
-	log.Infof("Successfully processed image %s (%d performer(s) matched)", imageID, len(performerIDs))
+		// Step 7: Update completion status
+		facesDetected := len(recognitionResp.Result)
+		facesMatched := len(performerIDs)
+		err = s.updateImageCompletionStatus(graphql.ID(imageID), facesDetected, facesMatched)
+		if err != nil {
+			log.Warnf("Failed to update completion status: %v", err)
+		}
+
+		log.Infof("Successfully processed image %s (%d performer(s) matched)", imageID, len(performerIDs))
+	} else {
+		log.Infof("Identification complete for image %s (%d face(s) detected, association skipped)", imageID, len(recognitionResp.Result))
+	}
 	return identities, nil
 }
 
@@ -576,7 +591,8 @@ func (s *Service) identifyGallery(galleryID string, createPerformer bool, limit 
 
 		log.Infof("Processing image %d/%d: %s", i+1, len(images), image.ID)
 
-		_, err := s.identifyImage(string(image.ID), createPerformer, nil)
+		// Batch processing always associates performers
+		_, err := s.identifyImage(string(image.ID), createPerformer, true, nil)
 		if err != nil {
 			log.Warnf("Failed to identify image %s: %v", image.ID, err)
 			failureCount++
@@ -677,7 +693,8 @@ func (s *Service) identifyImages(newOnly bool, limit int) error {
 
 			log.Infof("Processing image %d/%d: %s", processedCount, total, image.ID)
 
-			_, err := s.identifyImage(string(image.ID), false, nil)
+			// Batch processing always associates performers
+			_, err := s.identifyImage(string(image.ID), false, true, nil)
 			if err != nil {
 				log.Warnf("Failed to identify image %s: %v", image.ID, err)
 				failureCount++
@@ -896,4 +913,25 @@ func (s *Service) extractBase64FaceImage(imagePath string, box compreface.Boundi
 	}
 
 	return &base64Str, nil
+}
+
+// cropFaceBytes extracts a face region from image bytes and returns JPEG bytes.
+// Used for submitting individual faces to Compreface from multi-face images.
+func (s *Service) cropFaceBytes(imageBytes []byte, box compreface.BoundingBox, padding int) ([]byte, error) {
+	img, _, err := image.Decode(bytes.NewReader(imageBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode image: %w", err)
+	}
+
+	cropped, err := s.extractBoxImage(img, box, padding)
+	if err != nil {
+		return nil, fmt.Errorf("failed to crop face region: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, cropped, &jpeg.Options{Quality: 90}); err != nil {
+		return nil, fmt.Errorf("failed to encode cropped face: %w", err)
+	}
+
+	return buf.Bytes(), nil
 }

@@ -28,10 +28,10 @@ type PerformerData struct {
 
 // FaceIdentity represents a recognized face identity
 type FaceIdentity struct {
-	ImageID    string        `json:"image_id"`
-	Image      *string       `json:"image"`
-	Performer  PerformerData `json:"performer"`
-	Confidence *float64      `json:"confidence"`
+	ImageID     string               `json:"image_id"`
+	BoundingBox *compreface.BoundingBox `json:"bounding_box,omitempty"`
+	Performer   PerformerData        `json:"performer"`
+	Confidence  *float64             `json:"confidence"`
 }
 
 // Response envelope for IdentifyImage RPC
