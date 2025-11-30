@@ -28,10 +28,10 @@ type PerformerData struct {
 
 // FaceIdentity represents a recognized face identity
 type FaceIdentity struct {
-	ImageID     string               `json:"image_id"`
+	ImageID     string                  `json:"image_id"`
 	BoundingBox *compreface.BoundingBox `json:"bounding_box,omitempty"`
-	Performer   PerformerData        `json:"performer"`
-	Confidence  *float64             `json:"confidence"`
+	Performer   PerformerData           `json:"performer"`
+	Confidence  *float64                `json:"confidence"`
 }
 
 // Response envelope for IdentifyImage RPC
@@ -48,4 +48,12 @@ type FaceQualityResult struct {
 	Pose       float64
 	Occlusion  float64
 	Sharpness  float64
+}
+
+// FaceProcessingContext provides context for face processing.
+// Either Scene or ImageBytes must be provided.
+type FaceProcessingContext struct {
+	Scene      *stash.Scene // For scene processing (video/sprite extraction)
+	ImageBytes []byte       // For image processing (pre-loaded image data)
+	SourceID   string       // ID of the source (image ID or scene ID)
 }

@@ -138,14 +138,6 @@ func LoadImageBytes(imagePath string) ([]byte, error) {
 // Face Processing
 // ============================================================================
 
-// FaceProcessingContext provides context for face processing.
-// Either Scene or ImageBytes must be provided.
-type FaceProcessingContext struct {
-	Scene      *stash.Scene // For scene processing (video/sprite extraction)
-	ImageBytes []byte       // For image processing (pre-loaded image data)
-	SourceID   string       // ID of the source (image ID or scene ID)
-}
-
 // processFace processes a single detected face from Vision Service.
 // Used by both image and scene processing pipelines.
 // Returns the performer ID if matched or created, empty string if skipped.
@@ -155,9 +147,7 @@ func (s *Service) processFace(visionClient *vision.VisionServiceClient, ctx Face
 
 	// check for null
 	isEnhancedFace := det.Enhanced
-	var frameEnhancement *vision.EnhancementParameters
 	if metadata.FrameEnhancement != nil && isEnhancedFace {
-		frameEnhancement = metadata.FrameEnhancement
 	}
 
 	// Assess face quality for recognition attempt (lower bar)
@@ -173,50 +163,16 @@ func (s *Service) processFace(visionClient *vision.VisionServiceClient, ctx Face
 
 	// Try embedding-based recognition first (if 512-D embedding available)
 	if len(face.Embedding) == 512 {
-		performerID, similarity, err := s.recognizeByEmbedding(face.Embedding)
-		if err != nil {
-			log.Debugf("Face %s: Embedding recognition failed: %v, trying image-based", face.FaceID, err)
-		} else if performerID != "" {
-			// Get performer details for logging
-			performerName := "Undetermined"
-			performer, err := stash.GetPerformerByID(s.graphqlClient, performerID)
-			if err == nil && performer != nil {
-				performerName = performer.Name
-			}
-			log.Infof("Face %s: Matched via embedding (name: %s, similarity: %.2f)", face.FaceID, performerName, similarity)
+		performerID, _ := s.recognizeEmbeddedStashFace(face)
+		if performerID != "" {
 			return performerID, nil
-		} else {
-			log.Debugf("Face %s: No embedding match found, trying image-based", face.FaceID)
 		}
 	}
 
 	// Extract frame/thumbnail based on context
-	var frameBytes []byte
-	var err error
-
-	if ctx.ImageBytes != nil {
-		// Use pre-loaded image bytes (for image processing)
-		frameBytes = ctx.ImageBytes
-	} else if metadata.Method == "sprites" && ctx.Scene != nil {
-		// Extract thumbnail from sprite image
-		spriteVTT := s.NormalizeHost(ctx.Scene.Paths.VTT)
-		spriteImage := s.NormalizeHost(ctx.Scene.Paths.Sprite)
-
-		log.Debugf("Extracting face from sprite: vtt=%s, sprite=%s, timestamp=%.2f",
-			spriteVTT, spriteImage, det.Timestamp)
-		frameBytes, err = ExtractFromSprite(spriteImage, spriteVTT, det.Timestamp)
-		if err != nil {
-			return "", fmt.Errorf("failed to extract sprite thumbnail at %.2fs: %w", det.Timestamp, err)
-		}
-	} else if ctx.Scene != nil {
-		// Extract frame from video at the representative detection timestamp
-		videoPath := ctx.Scene.Files[0].Path
-		frameBytes, err = visionClient.ExtractFrame(videoPath, det.Timestamp, frameEnhancement)
-		if err != nil {
-			return "", fmt.Errorf("failed to extract frame at %.2fs: %w", det.Timestamp, err)
-		}
-	} else {
-		return "", fmt.Errorf("no scene or image bytes provided for frame extraction")
+	frameBytes, err := s.extractFrameBytesFromContext(visionClient, ctx, face, metadata)
+	if err != nil {
+		return "", err
 	}
 
 	// Crop face from frame using bounding box
@@ -246,39 +202,130 @@ func (s *Service) processFace(visionClient *vision.VisionServiceClient, ctx Face
 			goto createNewSubject
 		}
 
-		subject := bestMatch.Subject
-		similarity := bestMatch.Similarity
+		// find and return existing performer by matched subject, or empty if not found
+		return s.findExistingStashPerformerBySubject(bestMatch, face)
+	}
 
-		log.Debugf("Face %s matched to Compreface subject %s (similarity: %.2f)", face.FaceID, subject, similarity)
+createNewSubject:
+	// first, create Compreface subject
+	addResponse, err := s.createComprefaceSubject(faceCrop, ctx, face)
+	if err != nil {
+		return "", err
+	}
+	// then, create Stash performer from Compreface subject
+	performerID, err := s.createStashPerformerFromComprefaceSubject(addResponse.ImageID, face, addResponse.Subject)
+	if err != nil {
+		return "", err
+	}
+	return performerID, nil
+}
 
-		// Find performer with matching alias
-		performerID, err := stash.FindPerformerBySubjectName(s.graphqlClient, subject)
+// recognizeEmbeddedStashFace attempts to recognize and match a face to a Stash performer using its embedding.
+func (s *Service) recognizeEmbeddedStashFace(face vision.VisionFace) (graphql.ID, error) {
+	// Try embedding-based recognition first (if 512-D embedding available)
+	if len(face.Embedding) == 512 {
+		performerID, similarity, err := s.recognizeByEmbedding(face.Embedding)
 		if err != nil {
-			return "", fmt.Errorf("failed to find performer for subject %s: %w", subject, err)
-		}
-
-		if performerID != "" {
+			log.Debugf("Face %s: Embedding recognition failed: %v, trying image-based", face.FaceID, err)
+		} else if performerID != "" {
 			// Get performer details for logging
 			performerName := "Undetermined"
 			performer, err := stash.GetPerformerByID(s.graphqlClient, performerID)
 			if err == nil && performer != nil {
 				performerName = performer.Name
 			}
-			log.Infof("Matched face %s to performer (name: %s, subject: %s, similarity: %.2f)",
-				face.FaceID, performerName, subject, similarity)
+			log.Infof("Face %s: Matched via embedding (name: %s, similarity: %.2f)", face.FaceID, performerName, similarity)
 			return performerID, nil
+		} else {
+			log.Debugf("Face %s: No embedding match found, trying image-based", face.FaceID)
 		}
+	}
+	return "", nil
+}
 
-		log.Warnf("Subject %s exists in Compreface but no matching performer found", subject)
-		return "", nil
+// extractFrameBytesFromContext extracts the appropriate frame bytes based on the processing context.
+func (s *Service) extractFrameBytesFromContext(visionClient *vision.VisionServiceClient, ctx FaceProcessingContext, face vision.VisionFace, metadata vision.ResultMetadata) ([]byte, error) {
+	// Get the representative detection (best quality frame)
+	det := face.RepresentativeDetection
+
+	// check for null
+	isEnhancedFace := det.Enhanced
+	var frameEnhancement *vision.EnhancementParameters
+	if metadata.FrameEnhancement != nil && isEnhancedFace {
+		frameEnhancement = metadata.FrameEnhancement
 	}
 
-createNewSubject:
+	// Extract frame/thumbnail based on context
+	var frameBytes []byte
+	var err error
+
+	if ctx.ImageBytes != nil {
+		// Use pre-loaded image bytes (for image processing)
+		frameBytes = ctx.ImageBytes
+	} else if metadata.Method == "sprites" && ctx.Scene != nil {
+		// Extract thumbnail from sprite image
+		spriteVTT := s.NormalizeHost(ctx.Scene.Paths.VTT)
+		spriteImage := s.NormalizeHost(ctx.Scene.Paths.Sprite)
+
+		log.Debugf("Extracting face from sprite: vtt=%s, sprite=%s, timestamp=%.2f",
+			spriteVTT, spriteImage, det.Timestamp)
+		frameBytes, err = ExtractFromSprite(spriteImage, spriteVTT, det.Timestamp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to extract sprite thumbnail at %.2fs: %w", det.Timestamp, err)
+		}
+	} else if ctx.Scene != nil {
+		// Extract frame from video at the representative detection timestamp
+		videoPath := ctx.Scene.Files[0].Path
+		frameBytes, err = visionClient.ExtractFrame(videoPath, det.Timestamp, frameEnhancement)
+		if err != nil {
+			return nil, fmt.Errorf("failed to extract frame at %.2fs: %w", det.Timestamp, err)
+		}
+	} else {
+		return nil, fmt.Errorf("no scene or image bytes provided for frame extraction")
+	}
+	return frameBytes, nil
+}
+
+// findExistingStashPerformerBySubject finds a Stash performer by Compreface subject name from recognition result.
+func (s *Service) findExistingStashPerformerBySubject(recognitionResult compreface.FaceRecognition, face vision.VisionFace) (graphql.ID, error) {
+	subject := recognitionResult.Subject
+	similarity := recognitionResult.Similarity
+
+	log.Debugf("Face %s matched to Compreface subject %s (similarity: %.2f)", face.FaceID, subject, similarity)
+
+	// Find performer with matching alias
+	performerID, err := stash.FindPerformerBySubjectName(s.graphqlClient, subject)
+	if err != nil {
+		return "", fmt.Errorf("failed to find performer for subject %s: %w", subject, err)
+	}
+
+	if performerID != "" {
+		// Get performer details for logging
+		performerName := "Undetermined"
+		performer, err := stash.GetPerformerByID(s.graphqlClient, performerID)
+		if err == nil && performer != nil {
+			performerName = performer.Name
+		}
+		log.Infof("Matched face %s to performer (name: %s, subject: %s, similarity: %.2f)",
+			face.FaceID, performerName, subject, similarity)
+		return performerID, nil
+	}
+
+	log.Warnf("Subject %s exists in Compreface but no matching performer found", subject)
+	return "", nil
+}
+
+// createComprefaceSubject creates a new subject in Compreface for an unmatched face.
+func (s *Service) createComprefaceSubject(faceImage []byte, ctx FaceProcessingContext, face vision.VisionFace) (*compreface.AddSubjectResponse, error) {
+	// Get the representative detection (best quality frame)
+	det := face.RepresentativeDetection
+
 	// Check quality for subject creation (higher bar than recognition)
 	qrCreate := s.assessFaceQuality(det.Quality, s.config.MinQualityScore)
 	if !qrCreate.Acceptable {
-		log.Debugf("Skipping face %s for subject creation: %s", face.FaceID, qrCreate.Reason)
-		return "", nil
+		err := fmt.Errorf("skipping face %s for subject creation: %s", face.FaceID, qrCreate.Reason)
+		log.Debugf(err.Error())
+		return nil, err
 	}
 
 	// No match - create new subject and performer
@@ -287,12 +334,18 @@ createNewSubject:
 	log.Debugf("Creating new subject for unmatched face %s (composite=%.2f)", face.FaceID, qrCreate.Composite)
 
 	// Add subject to Compreface with face crop
-	addResponse, err := s.comprefaceClient.AddSubjectFromBytes(subjectName, faceCrop, "face.jpg")
+	addResponse, err := s.comprefaceClient.AddSubjectFromBytes(subjectName, faceImage, "face.jpg")
 	if err != nil {
-		return "", fmt.Errorf("failed to add subject to Compreface: %w", err)
+		return nil, fmt.Errorf("failed to add subject to Compreface: %w", err)
 	}
 
 	log.Debugf("Created Compreface subject: %s (image_id: %s)", addResponse.Subject, addResponse.ImageID)
+
+	return addResponse, nil
+}
+
+// createStashPerformerFromComprefaceSubject creates a new Stash performer from a Compreface subject.
+func (s *Service) createStashPerformerFromComprefaceSubject(comprefaceImageId string, face vision.VisionFace, subjectName string) (graphql.ID, error) {
 
 	// Create performer in Stash with demographics if available
 	var gender string
@@ -306,7 +359,7 @@ createNewSubject:
 		Name:   subjectName,
 		Age:    age,
 		Gender: gender,
-		Image:  s.comprefaceClient.SubjectImageURL(addResponse.ImageID),
+		Image:  s.comprefaceClient.SubjectImageURL(comprefaceImageId),
 	}
 
 	performer, err := s.createPerformerWithDetails(performerSubject)
