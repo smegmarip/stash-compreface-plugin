@@ -195,15 +195,6 @@ func (s *Service) processFace(visionClient *vision.VisionServiceClient, ctx Face
 		}
 	}
 
-	// Save cropped face for debugging
-	debugPath := fmt.Sprintf("/root/.stash/debug/face_%s.jpg", face.FaceID)
-	err = os.WriteFile(debugPath, faceCrop, 0644)
-	if err != nil {
-		log.Warnf("Failed to save debug cropped face %s: %v", face.FaceID, err)
-	} else {
-		log.Debugf("Saved debug cropped face to %s", debugPath)
-	}
-
 	log.Debugf("Extracted and cropped face from frame (%.0f bytes)", len(faceCrop))
 
 	// Try to recognize face in Compreface

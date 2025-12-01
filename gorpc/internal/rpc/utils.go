@@ -1,7 +1,9 @@
+// lint:file-ignore U1000 This file is used in RPC service
 package rpc
 
 import (
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 
@@ -214,4 +216,17 @@ func flipVertical(img image.Image) image.Image {
 	}
 
 	return flipped
+}
+
+// saveImageBytesToFile saves image bytes to specified file path for debugging
+func saveImageBytesToFile(imageBytes []byte, filePath string) error {
+	// Save cropped face for debugging
+	err := os.WriteFile(filePath, imageBytes, 0644)
+	if err != nil {
+		log.Warnf("Failed to save debug cropped face to %s: %v", filePath, err)
+		return err
+	} else {
+		log.Debugf("Saved debug cropped face to %s", filePath)
+	}
+	return nil
 }
