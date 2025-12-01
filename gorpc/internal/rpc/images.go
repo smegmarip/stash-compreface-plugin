@@ -1121,6 +1121,18 @@ func (s *Service) convertToJPEG(imagePath string) (image.Image, error) {
 func (s *Service) extractBoxImage(img image.Image, box compreface.BoundingBox, padding int) (image.Image, error) {
 	bounds := img.Bounds()
 
+	width := box.XMax - box.XMin
+	height := box.YMax - box.YMin
+	maxDim := width
+	if height > maxDim {
+		maxDim = height
+	}
+
+	// Min padding is 15% of max dimension
+	if padding < int(float64(maxDim)*0.15) {
+		padding = int(float64(maxDim) * 0.15)
+	}
+
 	xMin := utils.Max(bounds.Min.X, box.XMin-padding)
 	yMin := utils.Max(bounds.Min.Y, box.YMin-padding)
 	xMax := utils.Min(bounds.Max.X, box.XMax+padding)
