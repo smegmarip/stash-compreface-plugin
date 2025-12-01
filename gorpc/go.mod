@@ -5,6 +5,7 @@ go 1.24.3
 require (
 	github.com/disintegration/imaging v1.6.2
 	github.com/hasura/go-graphql-client v0.15.0
+	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd
 	github.com/stashapp/stash v0.29.3
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/image v0.32.0

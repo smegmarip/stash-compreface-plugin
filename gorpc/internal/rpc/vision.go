@@ -114,21 +114,31 @@ func (s *Service) SubmitImageJob(visionClient *vision.VisionServiceClient, image
 // Supports various formats: JPEG, PNG, GIF, BMP, WEBP.
 // Note: Image format registration is done via blank imports in images.go
 func LoadImageBytes(imagePath string) ([]byte, error) {
-	file, err := os.Open(imagePath)
+	// Read original image bytes
+	imageBytes, err := os.ReadFile(imagePath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open image: %w", err)
+		return nil, fmt.Errorf("failed to read image: %w", err)
 	}
-	defer file.Close()
 
-	img, _, err := image.Decode(file)
+	// Normalize EXIF orientation (returns original if no transformation needed)
+	normalizedBytes, err := NormalizeImageOrientation(imageBytes)
+	if err != nil {
+		log.Warnf("Failed to normalize EXIF orientation for %s: %v (continuing with original)", imagePath, err)
+		normalizedBytes = imageBytes
+	}
+
+	// Decode normalized image
+	img, format, err := image.Decode(bytes.NewReader(normalizedBytes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode image: %w", err)
 	}
 
-	// Encode as JPEG
-	buf := new(bytes.Buffer)
-	if err := jpeg.Encode(buf, img, &jpeg.Options{Quality: 95}); err != nil {
-		return nil, fmt.Errorf("failed to encode as JPEG: %w", err)
+	log.Debugf("Decoded image format: %s", format)
+
+	// Re-encode as JPEG
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 95}); err != nil {
+		return nil, fmt.Errorf("failed to encode image as JPEG: %w", err)
 	}
 
 	return buf.Bytes(), nil
@@ -176,13 +186,22 @@ func (s *Service) processFace(visionClient *vision.VisionServiceClient, ctx Face
 	}
 
 	// Crop face from frame using bounding box
-	faceCrop, err := s.cropFaceFromFrame(frameBytes, det.BBox)
+	faceCrop, err := s.cropFaceFromFrame(frameBytes, det.BBox, 20)
 	if err != nil {
 		if faceCrop != nil {
 			log.Warnf("Using uncropped frame for face %s due to cropping error: %v", face.FaceID, err)
 		} else {
 			return "", fmt.Errorf("failed to crop face: %w", err)
 		}
+	}
+
+	// Save cropped face for debugging
+	debugPath := fmt.Sprintf("/root/.stash/debug/face_%s.jpg", face.FaceID)
+	err = os.WriteFile(debugPath, faceCrop, 0644)
+	if err != nil {
+		log.Warnf("Failed to save debug cropped face %s: %v", face.FaceID, err)
+	} else {
+		log.Debugf("Saved debug cropped face to %s", debugPath)
 	}
 
 	log.Debugf("Extracted and cropped face from frame (%.0f bytes)", len(faceCrop))
@@ -218,6 +237,122 @@ createNewSubject:
 		return "", err
 	}
 	return performerID, nil
+}
+
+// processFaceForIdentification processes a Vision-detected face for the identify workflow.
+// Returns FaceIdentity with metadata instead of just performerID.
+// Respects createPerformer flag - if false, only attempts recognition without creation.
+func (s *Service) processFaceForIdentification(
+	visionClient *vision.VisionServiceClient,
+	ctx FaceProcessingContext,
+	face vision.VisionFace,
+	metadata vision.ResultMetadata,
+	createPerformer bool,
+) (*FaceIdentity, error) {
+	det := face.RepresentativeDetection
+
+	// Quality check (lower bar for recognition attempt)
+	qr := s.assessFaceQuality(det.Quality, s.config.MinProcessingQualityScore)
+	if !qr.Acceptable {
+		log.Debugf("Skipping face %s for identification: %s", face.FaceID, qr.Reason)
+		return nil, nil
+	}
+
+	// Initialize FaceIdentity with Vision data
+	identity := &FaceIdentity{
+		ImageID: ctx.SourceID,
+		BoundingBox: &compreface.BoundingBox{
+			XMin: int(det.BBox.XMin),
+			YMin: int(det.BBox.YMin),
+			XMax: int(det.BBox.XMax),
+			YMax: int(det.BBox.YMax),
+		},
+		Performer: PerformerData{},
+	}
+	if face.Demographics != nil {
+		identity.Performer.Age = face.Demographics.Age
+		identity.Performer.Gender = face.Demographics.Gender
+	}
+
+	var performerID graphql.ID
+	var similarity float64
+
+	// Step 1: Try embedding recognition
+	if len(face.Embedding) == 512 {
+		performerID, _ = s.recognizeEmbeddedStashFace(face)
+		if performerID != "" {
+			similarity = 0.95 // Embedding match is high confidence
+		}
+	}
+
+	// Step 2-6: If no embedding match, try image-based or create
+	if performerID == "" {
+		// Step 2: Extract frame and crop face
+		frameBytes, err := s.extractFrameBytesFromContext(visionClient, ctx, face, metadata)
+		if err != nil {
+			return nil, fmt.Errorf("failed to extract frame: %w", err)
+		}
+
+		faceCrop, err := s.cropFaceFromFrame(frameBytes, det.BBox, 20)
+		if err != nil && faceCrop == nil {
+			return nil, fmt.Errorf("failed to crop face: %w", err)
+		}
+
+		// Step 3: Try image-based recognition
+		recognitionResp, err := s.comprefaceClient.RecognizeFacesFromBytes(faceCrop, "face.jpg")
+		if err != nil {
+			return nil, fmt.Errorf("compreface recognition failed: %w", err)
+		}
+
+		// Step 4: Check if matched to existing subject
+		if len(recognitionResp.Result) > 0 && len(recognitionResp.Result[0].Subjects) > 0 {
+			bestMatch := recognitionResp.Result[0].Subjects[0]
+			if bestMatch.Similarity >= s.config.MinSimilarity {
+				performerID, _ = s.findExistingStashPerformerBySubject(bestMatch, face)
+				similarity = bestMatch.Similarity
+			}
+		}
+
+		// Step 5: No match found
+		if performerID == "" {
+			if !createPerformer {
+				// Return identity without performer
+				identity.Performer.Name = createSubjectName(ctx.SourceID, face.FaceID)
+				conf := 0.0
+				identity.Confidence = &conf
+				log.Debugf("Face %s: No match, createPerformer=false, returning unmatched identity", face.FaceID)
+				return identity, nil
+			}
+
+			// Step 6: Create new subject and performer
+			addResponse, err := s.createComprefaceSubject(faceCrop, ctx, face)
+			if err != nil {
+				// Quality too low or creation failed
+				identity.Performer.Name = createSubjectName(ctx.SourceID, face.FaceID)
+				conf := 0.0
+				identity.Confidence = &conf
+				log.Debugf("Face %s: Failed to create subject: %v", face.FaceID, err)
+				return identity, nil
+			}
+
+			performerID, err = s.createStashPerformerFromComprefaceSubject(addResponse.ImageID, face, addResponse.Subject)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create performer: %w", err)
+			}
+			similarity = 1.0 // New creation, full confidence
+		}
+	}
+
+	// Populate identity with performer (if matched or created)
+	performer, err := stash.GetPerformerByID(s.graphqlClient, performerID)
+	if err == nil && performer != nil {
+		confidence := similarity * 100
+		identity.Performer.ID = (*string)(&performer.ID)
+		identity.Performer.Name = performer.Name
+		identity.Confidence = &confidence
+	}
+
+	return identity, nil
 }
 
 // recognizeEmbeddedStashFace attempts to recognize and match a face to a Stash performer using its embedding.
@@ -374,7 +509,7 @@ func (s *Service) createStashPerformerFromComprefaceSubject(comprefaceImageId st
 }
 
 // cropFaceFromFrame crops a face region from a frame using the bounding box
-func (s *Service) cropFaceFromFrame(frameBytes []byte, bbox vision.VisionBoundingBox) ([]byte, error) {
+func (s *Service) cropFaceFromFrame(frameBytes []byte, bbox vision.VisionBoundingBox, padding int) ([]byte, error) {
 	// Decode frame bytes to image.Image
 	img, _, err := image.Decode(bytes.NewReader(frameBytes))
 	if err != nil {
@@ -390,7 +525,6 @@ func (s *Service) cropFaceFromFrame(frameBytes []byte, bbox vision.VisionBoundin
 	}
 
 	// Reuse existing cropping logic with padding
-	padding := 10 // Match images.go behavior
 	cropped, err := s.extractBoxImage(img, cfBox, padding)
 	if err != nil {
 		return frameBytes, fmt.Errorf("failed to crop face region: %w", err)

@@ -166,6 +166,10 @@ func (c *Client) DetectFacesFromBytes(imageBytes []byte, filename string) (*Dete
 
 // RecognizeFaces recognizes faces in an image file
 // POST /api/v1/recognition/recognize
+//
+// DEPRECATED: Submits full images to Compreface's internal detector (inferior to Vision Service).
+// Prefer Vision Service + RecognizeFacesFromBytes() for cropped faces.
+// Kept for backward compatibility only.
 func (c *Client) RecognizeFaces(imagePath string) (*RecognitionResponse, error) {
 	// Read image file
 	imageData, err := os.ReadFile(imagePath)
@@ -178,7 +182,8 @@ func (c *Client) RecognizeFaces(imagePath string) (*RecognitionResponse, error) 
 
 // RecognizeFacesFromBytes recognizes faces in image bytes
 func (c *Client) RecognizeFacesFromBytes(imageBytes []byte, filename string) (*RecognitionResponse, error) {
-	url := fmt.Sprintf("%s/api/v1/recognition/recognize?face_plugins=landmarks,gender,age,calculator,mask", c.BaseURL)
+	pluginArgs := "landmarks,gender,age,calculator,mask"
+	url := fmt.Sprintf("%s/api/v1/recognition/recognize?face_plugins=%s", c.BaseURL, url.QueryEscape(pluginArgs))
 
 	// Create multipart form
 	body := &bytes.Buffer{}

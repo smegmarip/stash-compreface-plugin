@@ -288,52 +288,48 @@ func (s *Service) identifyImage(imageID string, createPerformer bool, associateE
 	imagePath := image.Files[0].Path
 	log.Debugf("Image path: %s", imagePath)
 
-	// Step 2: Recognize faces using Compreface
-	log.Infof("Recognizing faces in image: %s", imagePath)
-	recognitionResp, err := s.comprefaceClient.RecognizeFaces(imagePath)
-	identities := &[]FaceIdentity{}
-	if err != nil {
-		// Check if error is "No face is found" (code 28)
-		if strings.Contains(err.Error(), "No face is found") || strings.Contains(err.Error(), "code\" : 28") {
-			log.Infof("No faces detected in image %s", imageID)
-			// Still add scanned tag
-			scannedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.ScannedTagName, "Compreface Scanned")
-			if err == nil {
-				stash.AddTagToImage(s.graphqlClient, graphql.ID(imageID), scannedTagID)
-			}
-			// Mark as complete (no faces to match)
-			s.updateImageCompletionStatus(graphql.ID(imageID), 0, 0)
-			return nil, nil
+	// Step 2: Detect faces - try Vision Service first, fall back to Compreface
+	var identities *[]FaceIdentity
+	var performerIDs []graphql.ID
+	var foundMatch bool
+	var recognitionResp *compreface.RecognitionResponse
+	var facesToProcess []compreface.RecognitionResult
+	var facesDetected int
+
+	// Check if Vision Service is available
+	visionClient := s.createVisionClient()
+	if visionClient != nil {
+		// VISION SERVICE PATH (preferred)
+		log.Infof("Using Vision Service for face detection: %s", imagePath)
+		visionIdentities, visionFacesDetected, visionErr := s.identifyImageViaVision(visionClient, imageID, imagePath, createPerformer, faceIndex)
+		if visionErr != nil {
+			log.Warnf("Vision Service identification failed, falling back to Compreface: %v", visionErr)
+		} else {
+			identities = visionIdentities
+			facesDetected = visionFacesDetected
+			goto handleAssociation // Skip to association logic
 		}
-		return nil, fmt.Errorf("failed to recognize faces: %w", err)
 	}
 
-	if len(recognitionResp.Result) == 0 {
-		log.Infof("No faces detected in image %s", imageID)
-		// Still add scanned tag
-		scannedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.ScannedTagName, "Compreface Scanned")
-		if err == nil {
-			stash.AddTagToImage(s.graphqlClient, graphql.ID(imageID), scannedTagID)
-		}
-		// Mark as complete (no faces to match)
-		s.updateImageCompletionStatus(graphql.ID(imageID), 0, 0)
-		return nil, nil
+	// Step 3: Fallback to Compreface Recognition
+	recognitionResp, err = s.processComprefaceRecognition(imageID, imagePath)
+	if err != nil || recognitionResp == nil {
+		return nil, err
 	}
 
+	identities = &[]FaceIdentity{}
 	log.Infof("Found %d face(s) in image %s", len(recognitionResp.Result), imageID)
 
-	// Step 3: Process faces (or specific face if faceIndex is provided)
-	facesToProcess := recognitionResp.Result
+	// Step 4: Process faces (or specific face if faceIndex is provided)
+	facesToProcess = recognitionResp.Result
+	facesDetected = len(facesToProcess)
 	if faceIndex != nil {
-		if *faceIndex >= len(facesToProcess) {
+		if *faceIndex >= facesDetected {
 			return nil, fmt.Errorf("face index %d out of range (detected %d faces)", *faceIndex, len(facesToProcess))
 		}
 		facesToProcess = []compreface.RecognitionResult{facesToProcess[*faceIndex]}
 		log.Infof("Processing only face index %d", *faceIndex)
 	}
-
-	var performerIDs []graphql.ID
-	foundMatch := false
 
 	for i, result := range facesToProcess {
 		log.Debugf("Processing face %d/%d", i+1, len(facesToProcess))
@@ -361,12 +357,6 @@ func (s *Service) identifyImage(imageID string, createPerformer bool, associateE
 			log.Debugf("Face %d: No subjects returned from Compreface", i)
 		}
 
-		// Initialize performer identity record
-		performer := PerformerData{
-			Age:    int((result.Age.Low + result.Age.High) / 2),
-			Gender: result.Gender.Value,
-		}
-
 		// Capture bounding box for client-side cropping
 		boundingBox := result.Box
 
@@ -375,157 +365,416 @@ func (s *Service) identifyImage(imageID string, createPerformer bool, associateE
 
 		// If no match above threshold and createPerformer is true, create new subject/performer
 		if matchedSubject == "" {
-			// Generate subject name
-			subjectName := compreface.CreateSubjectName(imageID)
-			performer.Name = subjectName
-			if createPerformer {
-				log.Infof("Creating new performer for face %d (no match above threshold)", i)
-
-				// Read image and crop face region for multi-face image support
-				imageBytes, err := os.ReadFile(imagePath)
-				if err != nil {
-					log.Warnf("Failed to read image for face crop: %v", err)
-					continue
-				}
-
-				faceCrop, err := s.cropFaceBytes(imageBytes, result.Box, 20)
-				if err != nil {
-					log.Warnf("Failed to crop face %d: %v", i, err)
-					continue
-				}
-
-				// Add cropped face to Compreface
-				log.Debugf("Adding subject '%s' to Compreface (cropped face)", subjectName)
-				addResp, err := s.comprefaceClient.AddSubjectFromBytes(subjectName, faceCrop, "face.jpg")
-				if err != nil {
-					log.Warnf("Failed to add subject for face %d: %v", i, err)
-					continue
-				}
-				log.Infof("Created Compreface subject '%s' (image_id: %s)", addResp.Subject, addResp.ImageID)
-
-				// Construct Compreface image URL
-				imageURL := s.comprefaceClient.SubjectImageURL(addResp.ImageID)
-				log.Debugf("Compreface face image URL: %s", imageURL)
-
-				// Create performer in Stash with face image from Compreface
-				performerSubject := stash.PerformerSubject{
-					Name:   subjectName,
-					Age:    performer.Age,
-					Image:  imageURL,
-					Gender: performer.Gender,
-				}
-
-				performerID, err := stash.CreatePerformerWithImage(s.graphqlClient, performerSubject)
-				performerIDStr := string(performerID)
-				performer.ID = &performerIDStr
-				if err != nil {
-					log.Warnf("Failed to create performer for subject '%s': %v", subjectName, err)
-					continue
-				}
-
-				performerIDs = append(performerIDs, performerID)
+			// Create new identity
+			identity, err := s.createNewIdentity(imageID, imagePath, i, result, createPerformer)
+			if err != nil || identity == nil {
+				continue
+			}
+			if createPerformer && identity.Performer.ID != nil {
+				performerIDs = append(performerIDs, graphql.ID(*identity.Performer.ID))
 				foundMatch = true
-				log.Infof("Created performer %s for face %d", performerID, i)
 			}
-			identity := FaceIdentity{
-				ImageID:     imageID,
-				BoundingBox: &boundingBox,
-				Performer:   performer,
-				Confidence:  &confidence,
-			}
-			*identities = append(*identities, identity)
+			*identities = append(*identities, *identity)
 			continue
 		}
 
 		// If we have a matched subject above threshold, find the performer
 		if matchedSubject != "" {
-			// Find performer by subject name/alias
-			performerID, err := stash.FindPerformerBySubjectName(s.graphqlClient, matchedSubject)
-			if err != nil {
-				log.Warnf("Failed to find performer for subject '%s': %v", matchedSubject, err)
+			// Create an identity for the existing match
+			identity, err := s.createExistingIdentity(matchedSubject, imageID, i, boundingBox, confidence, result)
+			if err != nil || identity == nil {
 				continue
 			}
+			performerID := graphql.ID(*identity.Performer.ID)
+			performerIDs = append(performerIDs, performerID)
+			foundMatch = true
+			*identities = append(*identities, *identity)
+		}
+	}
 
-			if performerID != "" {
-				performerIDs = append(performerIDs, performerID)
+handleAssociation:
+	// Extract matched performer IDs from identities (for Vision path)
+	// For Compreface path, performerIDs is already populated above
+	if len(performerIDs) == 0 {
+		// Vision path - extract from identities
+		for _, identity := range *identities {
+			if identity.Performer.ID != nil && *identity.Performer.ID != "" {
+				performerIDs = append(performerIDs, graphql.ID(*identity.Performer.ID))
 				foundMatch = true
-				log.Infof("Face %d: Associated with performer %s", i, performerID)
-				performerIDStr := string(performerID)
-				performer.ID = &performerIDStr
-				performer.Name = matchedSubject
-				identity := FaceIdentity{
-					ImageID:     imageID,
-					BoundingBox: &boundingBox,
-					Performer:   performer,
-					Confidence:  &confidence,
-				}
-				*identities = append(*identities, identity)
-			} else {
-				log.Warnf("Face %d: Subject '%s' exists in Compreface but no matching performer found in Stash", i, matchedSubject)
 			}
 		}
 	}
 
-	// Steps 4-7: Only update Stash if associateExisting is true
+	// Steps 5-8: Only update Stash tags (scanned, matched, completion) if associateExisting is true
 	if associateExisting {
-		// Step 4: Update image with matched performers
-		if len(performerIDs) > 0 {
-			log.Infof("Updating image %s with %d performer(s)", imageID, len(performerIDs))
+		// Step 5: Update image with matched performers
+		_ = s.associateExistingPerformers(*image, performerIDs)
 
-			// Get existing performers and merge
-			existingPerformerIDs := make([]graphql.ID, len(image.Performers))
-			for i, p := range image.Performers {
-				existingPerformerIDs[i] = p.ID
-			}
+		// Steps 6-8: Add scanned, matched or completion tags
+		_ = s.updateImageStatuses(imageID, foundMatch, facesDetected, performerIDs)
 
-			// Merge and deduplicate
-			allPerformerIDs := append(existingPerformerIDs, performerIDs...)
-			allPerformerIDs = utils.DeduplicateIDs(allPerformerIDs)
+		log.Infof("Successfully processed image %s (%d performer(s) matched)", imageID, len(performerIDs))
+	} else {
+		log.Infof("Identification complete for image %s (%d face(s) detected, association skipped)", imageID, facesDetected)
+	}
+	return identities, nil
+}
 
-			var performerIDStrs []string = make([]string, len(allPerformerIDs))
-			for i, id := range allPerformerIDs {
-				performerIDStrs[i] = string(id)
-			}
-
-			input := stash.ImageUpdateInput{
-				ID: string(imageID),
-			}
-			if len(performerIDs) > 0 {
-				input.PerformerIds = performerIDStrs
-			}
-			err = stash.UpdateImage(s.graphqlClient, graphql.ID(imageID), input)
-			if err != nil {
-				log.Warnf("Failed to update image performers: %v", err)
-			}
+// createVisionClient initializes and returns a Vision Service client if available
+func (s *Service) createVisionClient() *vision.VisionServiceClient {
+	if s.config.VisionServiceURL != "" {
+		visionClient := vision.NewVisionServiceClient(s.config.VisionServiceURL)
+		if healthErr := visionClient.HealthCheck(); healthErr == nil {
+			// VISION SERVICE PATH (preferred)
+			log.Infof("Vision Service is available.")
+			return visionClient
+		} else {
+			log.Warnf("Vision Service unavailable, falling back to Compreface: %v", healthErr)
 		}
+	} else {
+		log.Warnf("Vision Service not configured, using Compreface detector (inferior quality)")
+	}
+	return nil
+}
 
-		// Step 5: Add scanned tag
+// processComprefaceRecognition processes face recognition using Compreface for a single image.
+func (s *Service) processComprefaceRecognition(imageID string, imagePath string) (*compreface.RecognitionResponse, error) {
+	log.Infof("Recognizing faces in image using Compreface: %s", imagePath)
+	recognitionResp, err := s.comprefaceClient.RecognizeFaces(imagePath)
+	if err != nil {
+		// Check if error is "No face is found" (code 28)
+		if strings.Contains(err.Error(), "No face is found") || strings.Contains(err.Error(), "code\" : 28") {
+			log.Infof("No faces detected in image %s", imageID)
+			// Still add scanned tag
+			scannedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.ScannedTagName, "Compreface Scanned")
+			if err == nil {
+				stash.AddTagToImage(s.graphqlClient, graphql.ID(imageID), scannedTagID)
+			}
+			// Mark as complete (no faces to match)
+			s.updateImageCompletionStatus(graphql.ID(imageID), 0, 0)
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to recognize faces: %w", err)
+	}
+
+	if len(recognitionResp.Result) == 0 {
+		log.Infof("No faces detected in image %s", imageID)
+		// Still add scanned tag
 		scannedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.ScannedTagName, "Compreface Scanned")
 		if err == nil {
 			stash.AddTagToImage(s.graphqlClient, graphql.ID(imageID), scannedTagID)
 		}
-
-		// Step 6: Add matched tag if performers were found
-		if foundMatch {
-			matchedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.MatchedTagName, "Compreface Matched")
-			if err == nil {
-				stash.AddTagToImage(s.graphqlClient, graphql.ID(imageID), matchedTagID)
-			}
-		}
-
-		// Step 7: Update completion status
-		facesDetected := len(recognitionResp.Result)
-		facesMatched := len(performerIDs)
-		err = s.updateImageCompletionStatus(graphql.ID(imageID), facesDetected, facesMatched)
-		if err != nil {
-			log.Warnf("Failed to update completion status: %v", err)
-		}
-
-		log.Infof("Successfully processed image %s (%d performer(s) matched)", imageID, len(performerIDs))
-	} else {
-		log.Infof("Identification complete for image %s (%d face(s) detected, association skipped)", imageID, len(recognitionResp.Result))
+		// Mark as complete (no faces to match)
+		s.updateImageCompletionStatus(graphql.ID(imageID), 0, 0)
+		return nil, nil
 	}
-	return identities, nil
+	return recognitionResp, nil
+}
+
+// createComprefaceSubjectFromRecognitionResult creates a new Compreface subject from a recognition result
+func (s *Service) createComprefaceSubjectFromRecognitionResult(
+	subjectName string,
+	result compreface.RecognitionResult,
+	imagePath string,
+	faceIndex int,
+) (*compreface.AddSubjectResponse, error) {
+	// Read image and crop face region for multi-face image support
+	imageBytes, err := os.ReadFile(imagePath)
+	if err != nil {
+		log.Warnf("Failed to read image for face crop: %v", err)
+		return nil, err
+	}
+
+	faceCrop, err := s.cropFaceBytes(imageBytes, result.Box, 20)
+	if err != nil {
+		log.Warnf("Failed to crop face %d: %v", faceIndex, err)
+		return nil, err
+	}
+
+	// Add cropped face to Compreface
+	log.Debugf("Adding subject '%s' to Compreface (cropped face)", subjectName)
+	addResp, err := s.comprefaceClient.AddSubjectFromBytes(subjectName, faceCrop, "face.jpg")
+	if err != nil {
+		log.Warnf("Failed to add subject for face %d: %v", faceIndex, err)
+		return nil, err
+	}
+	log.Infof("Created Compreface subject '%s' (image_id: %s)", addResp.Subject, addResp.ImageID)
+	return addResp, nil
+}
+
+// createStashPerformerFromComprefaceResponse creates a Stash performer from a Compreface subject response
+func (s *Service) createStashPerformerFromComprefaceResponse(
+	response compreface.AddSubjectResponse,
+	result compreface.RecognitionResult,
+) (graphql.ID, error) {
+	subjectName := response.Subject
+	age := int((result.Age.Low + result.Age.High) / 2)
+	gender := result.Gender.Value
+	// Construct Compreface image URL
+	imageURL := s.comprefaceClient.SubjectImageURL(response.ImageID)
+	log.Debugf("Compreface face image URL: %s", imageURL)
+
+	// Create performer in Stash with face image from Compreface
+	performerSubject := stash.PerformerSubject{
+		Name:   subjectName,
+		Age:    age,
+		Image:  imageURL,
+		Gender: gender,
+	}
+
+	performerID, err := stash.CreatePerformerWithImage(s.graphqlClient, performerSubject)
+	if err != nil {
+		log.Warnf("Failed to create performer for subject '%s': %v", subjectName, err)
+		return "", err
+	}
+	return performerID, nil
+}
+
+// createNewIdentity creates a new FaceIdentity for a face without a match,
+// and optionally creates a new performer and subject.
+func (s *Service) createNewIdentity(
+	imageID string,
+	imagePath string,
+	faceIndex int,
+	result compreface.RecognitionResult,
+	createPerformer bool,
+) (*FaceIdentity, error) {
+	// Initialize performer identity record
+	performer := PerformerData{
+		Age:    int((result.Age.Low + result.Age.High) / 2),
+		Gender: result.Gender.Value,
+	}
+
+	// Capture bounding box for client-side cropping
+	boundingBox := result.Box
+
+	// Sanity check - ensure we have at least one subject returned
+	if len(result.Subjects) == 0 {
+		log.Infof("Face %d: No subjects returned from Compreface", faceIndex)
+		return nil, fmt.Errorf("no subjects returned from Compreface for face %d", faceIndex)
+	}
+
+	// Set default confidence to 100.0 for new subjects
+	confidence := 100.0
+
+	// If no match above threshold and createPerformer is true, create new subject/performer
+	// Generate subject name
+	subjectName := compreface.CreateSubjectName(imageID)
+	performer.Name = subjectName
+	if createPerformer {
+		// Create new Compreface subject from recognition result
+		addResp, err := s.createComprefaceSubjectFromRecognitionResult(subjectName, result, imagePath, faceIndex)
+		if err != nil || addResp == nil {
+			return nil, err
+		}
+
+		// Create Stash performer from Compreface response
+		performerID, err := s.createStashPerformerFromComprefaceResponse(*addResp, result)
+		if err != nil {
+			return nil, err
+		}
+
+		performerIDStr := string(performerID)
+		performer.ID = &performerIDStr
+		log.Infof("Created performer %s for face %d", performerID, faceIndex)
+	}
+	identity := FaceIdentity{
+		ImageID:     imageID,
+		BoundingBox: &boundingBox,
+		Performer:   performer,
+		Confidence:  &confidence,
+	}
+	return &identity, nil
+}
+
+// createExistingIdentity creates a FaceIdentity for
+// a face matched to an existing subject/performer.
+func (s *Service) createExistingIdentity(
+	matchedSubject string,
+	imageID string,
+	faceIndex int,
+	boundingBox compreface.BoundingBox,
+	confidence float64,
+	result compreface.RecognitionResult,
+) (*FaceIdentity, error) {
+	// Initialize performer identity record
+	performer := PerformerData{
+		Age:    int((result.Age.Low + result.Age.High) / 2),
+		Gender: result.Gender.Value,
+	}
+	// Find performer by subject name/alias
+	performerID, err := stash.FindPerformerBySubjectName(s.graphqlClient, matchedSubject)
+	if err != nil {
+		log.Warnf("Failed to find performer for subject '%s': %v", matchedSubject, err)
+		return nil, err
+	}
+
+	if performerID != "" {
+		log.Infof("Face %d: Associated with performer %s", faceIndex, performerID)
+		performerIDStr := string(performerID)
+		performer.ID = &performerIDStr
+		performer.Name = matchedSubject
+		identity := FaceIdentity{
+			ImageID:     imageID,
+			BoundingBox: &boundingBox,
+			Performer:   performer,
+			Confidence:  &confidence,
+		}
+		return &identity, nil
+	} else {
+		err = fmt.Errorf("face %d: subject '%s' exists in compreface but no matching performer found in stash", faceIndex, matchedSubject)
+		log.Warnf(err.Error())
+		return nil, err
+	}
+}
+
+// associateExistingPerformers associates existing performers with an image in Stash.
+func (s *Service) associateExistingPerformers(image stash.Image, performerIDs []graphql.ID) error {
+	imageID := image.ID
+	if len(performerIDs) > 0 {
+		log.Infof("Updating image %s with %d performer(s)", imageID, len(performerIDs))
+
+		// Get existing performers and merge
+		existingPerformerIDs := make([]graphql.ID, len(image.Performers))
+		for i, p := range image.Performers {
+			existingPerformerIDs[i] = p.ID
+		}
+
+		// Merge and deduplicate
+		allPerformerIDs := append(existingPerformerIDs, performerIDs...)
+		allPerformerIDs = utils.DeduplicateIDs(allPerformerIDs)
+
+		var performerIDStrs []string = make([]string, len(allPerformerIDs))
+		for i, id := range allPerformerIDs {
+			performerIDStrs[i] = string(id)
+		}
+
+		input := stash.ImageUpdateInput{
+			ID: string(imageID),
+		}
+		if len(performerIDs) > 0 {
+			input.PerformerIds = performerIDStrs
+		}
+		err := stash.UpdateImage(s.graphqlClient, graphql.ID(imageID), input)
+		if err != nil {
+			log.Warnf("Failed to update image performers: %v", err)
+			return err
+		}
+		return nil
+	}
+	err := fmt.Errorf("no performer IDs to associate with image %s", imageID)
+	log.Warnf(err.Error())
+	return err
+}
+
+// updateImageStatuses updates image tags and completion status based on recognition results.
+func (s *Service) updateImageStatuses(
+	imageID string,
+	foundMatching bool,
+	facesDetected int,
+	performerIDs []graphql.ID,
+) error {
+	hasError := false
+	// Add scanned tag
+	scannedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.ScannedTagName, "Compreface Scanned")
+	if err == nil {
+		stash.AddTagToImage(s.graphqlClient, graphql.ID(imageID), scannedTagID)
+	} else {
+		hasError = true
+		log.Warnf("Failed to add scanned tag to image %s: %v", imageID, err)
+	}
+
+	// Add matched tag if performers were found
+	if foundMatching {
+		matchedTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.MatchedTagName, "Compreface Matched")
+		if err == nil {
+			stash.AddTagToImage(s.graphqlClient, graphql.ID(imageID), matchedTagID)
+		} else {
+			hasError = true
+			log.Warnf("Failed to add matched tag to image %s: %v", imageID, err)
+		}
+	}
+
+	// Update completion status
+	facesMatched := len(performerIDs)
+	err = s.updateImageCompletionStatus(graphql.ID(imageID), facesDetected, facesMatched)
+	if err != nil {
+		hasError = true
+		log.Warnf("Failed to update completion status: %v", err)
+	}
+
+	if hasError {
+		return fmt.Errorf("one or more errors occurred while updating image statuses for %s", imageID)
+	}
+	return nil
+}
+
+// identifyImageViaVision processes a single image through Vision Service for identification.
+// Returns FaceIdentity results for all detected faces.
+func (s *Service) identifyImageViaVision(
+	visionClient *vision.VisionServiceClient,
+	imageID string,
+	imagePath string,
+	createPerformer bool,
+	faceIndex *int,
+) (*[]FaceIdentity, int, error) {
+	// Submit image to Vision Service
+	results, err := s.SubmitImageJob(visionClient, imagePath, imageID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("vision service job failed: %w", err)
+	}
+
+	// Handle no faces detected
+	if results.Faces == nil || len(results.Faces.Faces) == 0 {
+		log.Infof("No faces detected in image %s by Vision Service", imageID)
+		return &[]FaceIdentity{}, 0, nil
+	}
+
+	// Filter by faceIndex if specified
+	facesToProcess := results.Faces.Faces
+	facesDetected := len(facesToProcess)
+	if faceIndex != nil {
+		if *faceIndex >= len(facesToProcess) {
+			return nil, 0, fmt.Errorf("face index %d out of range (Vision detected %d faces)",
+				*faceIndex, facesDetected)
+		}
+		facesToProcess = []vision.VisionFace{facesToProcess[*faceIndex]}
+		log.Infof("Processing only face index %d", *faceIndex)
+	}
+
+	// Load image bytes for face cropping
+	imageBytes, err := LoadImageBytes(imagePath)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to load image bytes: %w", err)
+	}
+
+	log.Infof("Image %s: Found %d face(s) via Vision Service", imageID, facesDetected)
+
+	// Process each detected face
+	identities := &[]FaceIdentity{}
+	ctx := FaceProcessingContext{
+		ImageBytes: imageBytes,
+		SourceID:   imageID,
+	}
+
+	for i, face := range facesToProcess {
+		log.Debugf("Processing face %d/%d: %s", i+1, len(facesToProcess), face.FaceID)
+
+		identity, err := s.processFaceForIdentification(
+			visionClient, ctx, face, results.Faces.Metadata, createPerformer)
+
+		if err != nil {
+			log.Warnf("Failed to process face %s: %v", face.FaceID, err)
+			continue
+		}
+
+		if identity != nil {
+			*identities = append(*identities, *identity)
+		}
+	}
+
+	log.Infof("Image %s: Identified %d faces", imageID, len(*identities))
+	return identities, facesDetected, nil
 }
 
 // identifyGallery processes all images in a gallery
