@@ -37,10 +37,10 @@ import (
 // ============================================================================
 
 // NewVisionServiceClient creates a new client
-func NewVisionServiceClient(baseURL string) *VisionServiceClient {
+func NewVisionServiceClient(baseURL string, frameServerURL string) *VisionServiceClient {
 	return &VisionServiceClient{
 		BaseURL:        baseURL,
-		FrameServerURL: "http://vision-frame-server:5001", // Internal container address
+		FrameServerURL: frameServerURL, // Passed from config
 		HTTPClient: &http.Client{
 			Timeout: 120 * time.Second,
 		},
@@ -183,7 +183,7 @@ func (c *VisionServiceClient) WaitForCompletion(jobID string, progressCallback f
 
 // HealthCheck checks if Vision Service is available and healthy
 func (c *VisionServiceClient) HealthCheck() error {
-	url := fmt.Sprintf("%s/health", c.BaseURL)
+	url := fmt.Sprintf("%s/vision/health", c.BaseURL)
 
 	resp, err := c.HTTPClient.Get(url)
 	if err != nil {
@@ -229,7 +229,7 @@ func IsVisionServiceAvailable(baseURL string) bool {
 		return false
 	}
 
-	client := NewVisionServiceClient(baseURL)
+	client := NewVisionServiceClient(baseURL, "http://vision-frame-server:5001")
 	err := client.HealthCheck()
 	if err != nil {
 		log.Warnf("Vision Service not available at %s: %v", baseURL, err)
