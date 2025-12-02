@@ -28,7 +28,7 @@ func createVisionServiceClient(t *testing.T) *vision.VisionServiceClient {
 		}
 	}
 
-	client := vision.NewVisionServiceClient(env.VisionServiceURL)
+	client := vision.NewVisionServiceClient(env.VisionServiceURL, env.FrameServerURL)
 	require.NotNil(t, client)
 
 	return client

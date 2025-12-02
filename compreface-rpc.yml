@@ -22,6 +22,10 @@ settings:
   verificationApiKey:
     displayName: Verification API Key
     description: Compreface verification API key (optional)
+  frameServerUrl:
+    displayName: Vision Frame Server URL
+    description: URL of the stash-auto-vision service for frame extraction (leave empty to use default container url http://vision-frame-server:5001)
+    type: STRING
     type: STRING
   cooldownSeconds:
     displayName: Cooldown Period (seconds)

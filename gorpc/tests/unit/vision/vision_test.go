@@ -116,7 +116,8 @@ func TestBuildAnalyzeRequest_SpecialCharacters(t *testing.T) {
 
 func TestNewVisionServiceClient(t *testing.T) {
 	baseURL := "http://localhost:5010"
-	client := vision.NewVisionServiceClient(baseURL)
+	frameServerURL := "http://localhost:5001"
+	client := vision.NewVisionServiceClient(baseURL, frameServerURL)
 
 	assert.NotNil(t, client, "client should not be nil")
 }

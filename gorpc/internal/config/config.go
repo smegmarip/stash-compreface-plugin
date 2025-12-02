@@ -82,6 +82,9 @@ func Load(input common.PluginInput) (*PluginConfig, error) {
 		if val := getStringSetting(pluginConfig, "visionServiceUrl"); val != "" {
 			config.VisionServiceURL = val
 		}
+		if val := getStringSetting(pluginConfig, "frameServerUrl"); val != "" {
+			config.FrameServerURL = val
+		}
 		if val := getStringSetting(pluginConfig, "stashHostUrl"); val != "" {
 			config.StashHostURL = val
 		}
@@ -96,6 +99,15 @@ func Load(input common.PluginInput) (*PluginConfig, error) {
 		log.Infof("Vision Service configured at: %s", config.VisionServiceURL)
 	} else {
 		log.Info("Vision Service not configured (video recognition disabled)")
+	}
+
+	// Resolve Frame Server URL with auto-detection (optional service)
+	if config.FrameServerURL != "" {
+		config.FrameServerURL = resolveServiceURL(config.FrameServerURL, "vision-frame-server", "5001")
+		log.Infof("Frame Server configured at: %s", config.FrameServerURL)
+	} else {
+		config.FrameServerURL = "http://vision-frame-server:5001"
+		log.Info("Frame Server not configured, using default: http://vision-frame-server:5001")
 	}
 
 	if config.StashHostURL != "" {

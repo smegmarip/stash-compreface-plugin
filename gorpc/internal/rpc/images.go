@@ -40,7 +40,7 @@ func (s *Service) recognizeImages(limit int) error {
 	}
 
 	// Initialize Vision Service client
-	visionClient := vision.NewVisionServiceClient(s.config.VisionServiceURL)
+	visionClient := vision.NewVisionServiceClient(s.config.VisionServiceURL, s.config.FrameServerURL)
 
 	// Health check
 	if err := visionClient.HealthCheck(); err != nil {
@@ -423,7 +423,7 @@ handleAssociation:
 // createVisionClient initializes and returns a Vision Service client if available
 func (s *Service) createVisionClient() *vision.VisionServiceClient {
 	if s.config.VisionServiceURL != "" {
-		visionClient := vision.NewVisionServiceClient(s.config.VisionServiceURL)
+		visionClient := vision.NewVisionServiceClient(s.config.VisionServiceURL, s.config.FrameServerURL)
 		if healthErr := visionClient.HealthCheck(); healthErr == nil {
 			// VISION SERVICE PATH (preferred)
 			log.Infof("Vision Service is available.")

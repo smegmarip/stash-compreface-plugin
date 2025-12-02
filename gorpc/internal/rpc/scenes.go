@@ -19,7 +19,7 @@ func (s *Service) recognizeScenes(useSprites bool, scanPartial bool, limit int) 
 	}
 
 	// Initialize Vision Service client
-	visionClient := vision.NewVisionServiceClient(s.config.VisionServiceURL)
+	visionClient := vision.NewVisionServiceClient(s.config.VisionServiceURL, s.config.FrameServerURL)
 
 	// Health check
 	if err := visionClient.HealthCheck(); err != nil {
