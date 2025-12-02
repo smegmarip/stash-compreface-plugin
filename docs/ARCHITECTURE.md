@@ -114,6 +114,7 @@ Routes Stash plugin tasks to appropriate handlers.
 **Optional Settings:**
 - `comprefaceUrl` - Default: `http://compreface:8000`
 - `visionServiceUrl` - Default: `http://vision-api:5010`
+- `frameServerUrl` - Default: `http://vision-frame-server:5001`
 - `cooldownSeconds` - Default: 10
 - `maxBatchSize` - Default: 20
 - `minSimilarity` - Default: 0.81

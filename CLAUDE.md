@@ -163,6 +163,7 @@ go build -o stash-compreface-rpc     # Build
 
 **Optional Services:**
 
+- `frameServerUrl` - Vision Service for frame extraction (default: `http://vision-frame-server:5001`)
 - `visionServiceURL` - Vision Service for face detection (default: `http://vision-api:5010`)
 
 ### Testing
