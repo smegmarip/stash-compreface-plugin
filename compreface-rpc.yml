@@ -11,26 +11,22 @@ settings:
     displayName: Compreface Service URL
     description: URL of the Compreface service (leave empty for auto-detection at http://compreface:8000)
     type: STRING
-  recognitionApiKey:
-    displayName: Recognition API Key
-    description: Compreface recognition API key (required)
-    type: STRING
-  detectionApiKey:
-    displayName: Detection API Key
-    description: Compreface detection API key (required)
-    type: STRING
-  verificationApiKey:
-    displayName: Verification API Key
-    description: Compreface verification API key (optional)
-  frameServerUrl:
-    displayName: Vision Frame Server URL
-    description: URL of the stash-auto-vision service for frame extraction (leave empty to use default container url http://vision-frame-server:5001)
-    type: STRING
-    type: STRING
   cooldownSeconds:
     displayName: Cooldown Period (seconds)
     description: Delay between batches to prevent hardware overheating (default 10 seconds)
     type: NUMBER
+  detectionApiKey:
+    displayName: Detection API Key
+    description: Compreface detection API key (required)
+    type: STRING
+  frameServerUrl:
+    displayName: Vision Frame Server URL
+    description: URL of the stash-auto-vision service for frame extraction (leave empty to use default container url http://vision-frame-server:5001)
+    type: STRING
+  matchedTagName:
+    displayName: Matched Tag Name
+    description: Tag to mark matched images (default "Compreface Matched")
+    type: STRING
   maxBatchSize:
     displayName: Maximum Batch Size
     description: Maximum items to process per batch (default 20, prevents hardware stress)
@@ -55,21 +51,25 @@ settings:
     displayName: Minimum Quality Score (Recognition)
     description: Minimum composite quality for recognition attempts (default 0 = use component gates, range 0.0-1.0)
     type: STRING
+  recognitionApiKey:
+    displayName: Recognition API Key
+    description: Compreface recognition API key (required)
+    type: STRING
   scannedTagName:
     displayName: Scanned Tag Name
     description: Tag to mark scanned images (default "Compreface Scanned")
     type: STRING
-  matchedTagName:
-    displayName: Matched Tag Name
-    description: Tag to mark matched images (default "Compreface Matched")
+  stashHostUrl:
+    displayName: Stash Host URL
+    description: URL of the Stash host (leave empty for auto-detection)
     type: STRING
   visionServiceUrl:
     displayName: Vision Service URL
     description: URL of the stash-auto-vision service for video face recognition (leave empty to disable, default http://vision-api:5010)
     type: STRING
-  stashHostUrl:
-    displayName: Stash Host URL
-    description: URL of the Stash host (leave empty for auto-detection)
+  verificationApiKey:
+    displayName: Verification API Key
+    description: Compreface verification API key (optional)
     type: STRING
 
 tasks:
