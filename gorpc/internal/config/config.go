@@ -18,19 +18,19 @@ import (
 func Load(input common.PluginInput) (*PluginConfig, error) {
 	config := &PluginConfig{
 		// Default values
-		CooldownSeconds:           10,
-		MaxBatchSize:              20,
-		MinSimilarity:             0.81,
-		MinFaceSize:               64,
-		MinConfidenceScore:        0.7,
-		MinQualityScore:           0, // 0 = use component gates (size, pose, occlusion)
-		MinProcessingQualityScore: 0, // 0 = use component gates (size, pose, occlusion)
+		CooldownSeconds:            10,
+		MaxBatchSize:               20,
+		MinSimilarity:              0.81,
+		MinFaceSize:                64,
+		MinConfidenceScore:         0.7,
+		MinQualityScore:            0, // 0 = use component gates (size, pose, occlusion)
+		MinProcessingQualityScore:  0, // 0 = use component gates (size, pose, occlusion)
 		EnhanceQualityScoreTrigger: 0.5,
-		ScannedTagName:            "Compreface Scanned",
-		MatchedTagName:            "Compreface Matched",
-		PartialTagName:            "Compreface Partial",
-		CompleteTagName:           "Compreface Complete",
-		SyncedTagName:             "Compreface Synced",
+		ScannedTagName:             "Compreface Scanned",
+		MatchedTagName:             "Compreface Matched",
+		PartialTagName:             "Compreface Partial",
+		CompleteTagName:            "Compreface Complete",
+		SyncedTagName:              "Compreface Synced",
 	}
 
 	// Fetch plugin configuration from Stash
@@ -107,7 +107,7 @@ func Load(input common.PluginInput) (*PluginConfig, error) {
 		log.Infof("Frame Server configured at: %s", config.FrameServerURL)
 	} else {
 		config.FrameServerURL = "http://vision-frame-server:5001"
-		log.Info("Frame Server not configured, using default: http://vision-frame-server:5001")
+		log.Infof("Frame Server not configured, using default: %s", config.FrameServerURL)
 	}
 
 	if config.StashHostURL != "" {

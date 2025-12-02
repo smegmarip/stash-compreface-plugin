@@ -18,12 +18,16 @@ func createVisionServiceClient(t *testing.T) *vision.VisionServiceClient {
 	env := testutil.SetupTestEnv(t)
 	defer env.Cleanup()
 
+	if env.FrameServerURL == "" {
+		t.Skip("Frame server URL not configured")
+	}
+
 	if env.VisionServiceURL == "" {
 		t.Skip("Vision service URL not configured")
 	} else {
 		t.Logf("Using Vision service URL: %s", env.VisionServiceURL)
 		// Check if service is available
-		if !vision.IsVisionServiceAvailable(env.VisionServiceURL) {
+		if !vision.IsVisionServiceAvailable(env.VisionServiceURL, env.FrameServerURL) {
 			t.Skipf("Vision service not available at %s", env.VisionServiceURL)
 		}
 	}
@@ -57,11 +61,15 @@ func TestVisionIntegration_IsVisionServiceAvailable(t *testing.T) {
 	env := testutil.SetupTestEnv(t)
 	defer env.Cleanup()
 
+	if env.FrameServerURL == "" {
+		t.Skip("Frame server URL not configured")
+	}
+
 	if env.VisionServiceURL == "" {
 		t.Skip("Vision service URL not configured")
 	}
 
-	available := vision.IsVisionServiceAvailable(env.VisionServiceURL)
+	available := vision.IsVisionServiceAvailable(env.VisionServiceURL, env.FrameServerURL)
 	if !available {
 		t.Skipf("Vision service not available at %s", env.VisionServiceURL)
 	}

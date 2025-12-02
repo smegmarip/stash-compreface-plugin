@@ -32,11 +32,6 @@ import (
 //
 // ============================================================================
 
-// Default service URLs
-const (
-	DefaultFrameServerURL = "http://vision-frame-server:5001"
-)
-
 // ============================================================================
 // API Methods
 // ============================================================================
@@ -229,13 +224,13 @@ func BuildAnalyzeRequest(videoPath, sceneID string, facesParameters FacesParamet
 }
 
 // IsVisionServiceAvailable checks if Vision Service is configured and reachable
-func IsVisionServiceAvailable(baseURL string) bool {
-	if baseURL == "" {
+func IsVisionServiceAvailable(baseURL string, frameServerURL string) bool {
+	if baseURL == "" || frameServerURL == "" {
 		return false
 	}
 
-	// Use default Frame Server URL for health check (doesn't need config access)
-	client := NewVisionServiceClient(baseURL, DefaultFrameServerURL)
+	// Use empty Frame Server URL for health check (doesn't need config access)
+	client := NewVisionServiceClient(baseURL, frameServerURL)
 	err := client.HealthCheck()
 	if err != nil {
 		log.Warnf("Vision Service not available at %s: %v", baseURL, err)

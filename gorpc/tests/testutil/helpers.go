@@ -14,6 +14,7 @@ type TestEnv struct {
 	StashURL         string
 	ComprefaceURL    string
 	VisionServiceURL string
+	FrameServerURL   string
 	RecognitionKey   string
 	DetectionKey     string
 	VerificationKey  string
