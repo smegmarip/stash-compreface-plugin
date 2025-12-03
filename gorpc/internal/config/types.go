@@ -17,6 +17,7 @@ type PluginConfig struct {
 	MinQualityScore           float64 // Minimum composite quality for subject creation (0=use component gates)
 	MinProcessingQualityScore float64 // Minimum composite quality for recognition (0=use component gates)
 	EnhanceQualityScoreTrigger     float64 // Quality score threshold to trigger enhancement
+	EnableEmbeddingRecognition     bool    // Enable embedding-based recognition (default: false, requires compatible embeddings)
 	ScannedTagName                 string
 	MatchedTagName                 string
 	PartialTagName                 string

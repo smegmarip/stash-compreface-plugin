@@ -26,6 +26,7 @@ func Load(input common.PluginInput) (*PluginConfig, error) {
 		MinQualityScore:            0, // 0 = use component gates (size, pose, occlusion)
 		MinProcessingQualityScore:  0, // 0 = use component gates (size, pose, occlusion)
 		EnhanceQualityScoreTrigger: 0.5,
+		EnableEmbeddingRecognition: false, // Embedding recognition disabled by default due to Compreface format incompatibility
 		ScannedTagName:             "Compreface Scanned",
 		MatchedTagName:             "Compreface Matched",
 		PartialTagName:             "Compreface Partial",

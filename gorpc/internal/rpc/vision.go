@@ -171,8 +171,8 @@ func (s *Service) processFace(visionClient *vision.VisionServiceClient, ctx Face
 		return "", nil
 	}
 
-	// Try embedding-based recognition first (if 512-D embedding available)
-	if len(face.Embedding) == 512 {
+	// Try embedding-based recognition first (if enabled and 512-D embedding available)
+	if s.config.EnableEmbeddingRecognition && len(face.Embedding) == 512 {
 		performerID, _ := s.recognizeEmbeddedStashFace(face)
 		if performerID != "" {
 			return performerID, nil
@@ -268,8 +268,8 @@ func (s *Service) processFaceForIdentification(
 	var performerID graphql.ID
 	var similarity float64
 
-	// Step 1: Try embedding recognition
-	if len(face.Embedding) == 512 {
+	// Step 1: Try embedding recognition (if enabled)
+	if s.config.EnableEmbeddingRecognition && len(face.Embedding) == 512 {
 		performerID, _ = s.recognizeEmbeddedStashFace(face)
 		if performerID != "" {
 			similarity = 0.95 // Embedding match is high confidence

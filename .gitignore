@@ -83,6 +83,9 @@ session-history.txt
 .mailmap
 .history
 
+# Compreface migration backup
+compreface_backup/
+
 # Build artifacts
 gorpc/.golangci.yml.bak
 gorpc/BUILD_ERRORS.md
