@@ -66,6 +66,7 @@ type FaceRecognition struct {
 
 // RecognitionResult contains the recognition result for a single face
 type RecognitionResult struct {
+	Enhanced  bool              `json:"enhanced,omitempty"`
 	Box       BoundingBox       `json:"box"`
 	Subjects  []FaceRecognition `json:"subjects"`
 	Embedding []float64         `json:"embedding,omitempty"`

@@ -14,6 +14,7 @@ import (
 	"github.com/smegmarip/stash-compreface-plugin/internal/compreface"
 	"github.com/smegmarip/stash-compreface-plugin/internal/stash"
 	"github.com/smegmarip/stash-compreface-plugin/internal/vision"
+	"github.com/smegmarip/stash-compreface-plugin/pkg/utils"
 )
 
 // ============================================================================
@@ -123,7 +124,7 @@ func LoadImageBytes(imagePath string) ([]byte, error) {
 	// Normalize EXIF orientation (returns original if no transformation needed)
 	normalizedBytes, err := NormalizeImageOrientation(imageBytes)
 	if err != nil {
-		log.Warnf("Failed to normalize EXIF orientation for %s: %v (continuing with original)", imagePath, err)
+		log.Warnf("Failed to normalize EXIF orientation for %s: %s (continuing with original)", imagePath, utils.FlattenError(err))
 		normalizedBytes = imageBytes
 	}
 
@@ -189,7 +190,7 @@ func (s *Service) processFace(visionClient *vision.VisionServiceClient, ctx Face
 	faceCrop, err := s.cropFaceFromFrame(frameBytes, det.BBox, 20)
 	if err != nil {
 		if faceCrop != nil {
-			log.Warnf("Using uncropped frame for face %s due to cropping error: %v", face.FaceID, err)
+			log.Warnf("Using uncropped frame for face %s due to cropping error: %s", face.FaceID, utils.FlattenError(err))
 		} else {
 			return "", fmt.Errorf("failed to crop face: %w", err)
 		}
@@ -251,7 +252,8 @@ func (s *Service) processFaceForIdentification(
 
 	// Initialize FaceIdentity with Vision data
 	identity := &FaceIdentity{
-		ImageID: ctx.SourceID,
+		Enhanced: &det.Enhanced,
+		ImageID:  ctx.SourceID,
 		BoundingBox: &compreface.BoundingBox{
 			XMin: int(det.BBox.XMin),
 			YMin: int(det.BBox.YMin),
@@ -386,8 +388,14 @@ func (s *Service) extractFrameBytesFromContext(visionClient *vision.VisionServic
 	var err error
 
 	if ctx.ImageBytes != nil {
-		// Use pre-loaded image bytes (for image processing)
-		frameBytes = ctx.ImageBytes
+		if isEnhancedFace && ctx.Image != nil {
+			log.Debugf("Using enhanced image bytes for face %s", face.FaceID)
+			imagePath := ctx.Image.Files[0].Path
+			frameBytes, err = visionClient.ExtractFrame(imagePath, det.Timestamp, frameEnhancement)
+		} else {
+			// Use pre-loaded image bytes (for image processing)
+			frameBytes = ctx.ImageBytes
+		}
 	} else if metadata.Method == "sprites" && ctx.Scene != nil {
 		// Extract thumbnail from sprite image
 		spriteVTT := s.NormalizeHost(ctx.Scene.Paths.VTT)
@@ -395,7 +403,7 @@ func (s *Service) extractFrameBytesFromContext(visionClient *vision.VisionServic
 
 		log.Debugf("Extracting face from sprite: vtt=%s, sprite=%s, timestamp=%.2f",
 			spriteVTT, spriteImage, det.Timestamp)
-		frameBytes, err = ExtractFromSprite(spriteImage, spriteVTT, det.Timestamp)
+		frameBytes, err = ExtractFromSprite(spriteImage, spriteVTT, det.Timestamp, isEnhancedFace)
 		if err != nil {
 			return nil, fmt.Errorf("failed to extract sprite thumbnail at %.2fs: %w", det.Timestamp, err)
 		}

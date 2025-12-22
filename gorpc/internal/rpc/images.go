@@ -9,8 +9,10 @@ import (
 	_ "image/gif" // Register GIF format
 	"image/jpeg"
 	_ "image/png" // Register PNG format
+	"math/rand"
 	"os"
 	"strings"
+	"time"
 
 	_ "golang.org/x/image/bmp"  // Register BMP format
 	_ "golang.org/x/image/webp" // Register WEBP format
@@ -127,7 +129,7 @@ func (s *Service) recognizeImages(limit int) error {
 
 			err := s.recognizeImageFaces(visionClient, string(img.ID))
 			if err != nil {
-				log.Warnf("Failed to recognize faces in image %s: %v", img.ID, err)
+				log.Warnf("Failed to recognize faces in image %s: %s", img.ID, utils.FlattenError(err))
 				failureCount++
 			} else {
 				successCount++
@@ -209,12 +211,13 @@ func (s *Service) recognizeImageFaces(visionClient *vision.VisionServiceClient, 
 
 	for _, face := range results.Faces.Faces {
 		ctx := FaceProcessingContext{
+			Image:      img,
 			ImageBytes: imageBytes,
 			SourceID:   imageID,
 		}
 		performerID, err := s.processFace(visionClient, ctx, face, requestMetadata)
 		if err != nil {
-			log.Warnf("Failed to process face %s: %v", face.FaceID, err)
+			log.Warnf("Failed to process face %s: %s", face.FaceID, utils.FlattenError(err))
 			continue
 		}
 		if performerID != "" {
@@ -248,7 +251,7 @@ func (s *Service) recognizeImageFaces(visionClient *vision.VisionServiceClient, 
 		}
 		err = stash.UpdateImage(s.graphqlClient, graphql.ID(imageID), input)
 		if err != nil {
-			log.Warnf("Failed to update image performers: %v", err)
+			log.Warnf("Failed to update image performers: %s", utils.FlattenError(err))
 		}
 
 		// Add matched tag
@@ -261,7 +264,7 @@ func (s *Service) recognizeImageFaces(visionClient *vision.VisionServiceClient, 
 	// Step 7: Update completion status
 	err = s.updateImageCompletionStatus(graphql.ID(imageID), facesDetected, facesProcessed)
 	if err != nil {
-		log.Warnf("Failed to update completion status: %v", err)
+		log.Warnf("Failed to update completion status: %s", utils.FlattenError(err))
 	}
 
 	log.Infof("Image %s: %d subjects processed", imageID, facesProcessed)
@@ -481,13 +484,13 @@ func (s *Service) createComprefaceSubjectFromRecognitionResult(
 	// Read image and crop face region for multi-face image support
 	imageBytes, err := os.ReadFile(imagePath)
 	if err != nil {
-		log.Warnf("Failed to read image for face crop: %v", err)
+		log.Warnf("Failed to read image for face crop: %s", utils.FlattenError(err))
 		return nil, err
 	}
 
 	faceCrop, err := s.cropFaceBytes(imageBytes, result.Box, 20)
 	if err != nil {
-		log.Warnf("Failed to crop face %d: %v", faceIndex, err)
+		log.Warnf("Failed to crop face %d: %s", faceIndex, utils.FlattenError(err))
 		return nil, err
 	}
 
@@ -495,7 +498,7 @@ func (s *Service) createComprefaceSubjectFromRecognitionResult(
 	log.Debugf("Adding subject '%s' to Compreface (cropped face)", subjectName)
 	addResp, err := s.comprefaceClient.AddSubjectFromBytes(subjectName, faceCrop, "face.jpg")
 	if err != nil {
-		log.Warnf("Failed to add subject for face %d: %v", faceIndex, err)
+		log.Warnf("Failed to add subject for face %d: %s", faceIndex, utils.FlattenError(err))
 		return nil, err
 	}
 	log.Infof("Created Compreface subject '%s' (image_id: %s)", addResp.Subject, addResp.ImageID)
@@ -524,7 +527,7 @@ func (s *Service) createStashPerformerFromComprefaceResponse(
 
 	performerID, err := stash.CreatePerformerWithImage(s.graphqlClient, performerSubject)
 	if err != nil {
-		log.Warnf("Failed to create performer for subject '%s': %v", subjectName, err)
+		log.Warnf("Failed to create performer for subject '%s': %s", subjectName, utils.FlattenError(err))
 		return "", err
 	}
 	return performerID, nil
@@ -547,6 +550,19 @@ func (s *Service) createNewIdentity(
 
 	// Capture bounding box for client-side cropping
 	boundingBox := result.Box
+
+	// If enhanced result, save enhanced image to local file first
+	if result.Enhanced {
+		enhancedFrame, err := s.downloadEnhancedImage(imageID, imagePath, &faceIndex)
+		if err != nil {
+			return nil, err
+		}
+
+		imagePath, err = s.saveEnhanceImage(enhancedFrame, imageID, &faceIndex)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	// Sanity check - ensure we have at least one subject returned
 	if len(result.Subjects) == 0 {
@@ -579,6 +595,7 @@ func (s *Service) createNewIdentity(
 		log.Infof("Created performer %s for face %d", performerID, faceIndex)
 	}
 	identity := FaceIdentity{
+		Enhanced:    &result.Enhanced,
 		ImageID:     imageID,
 		BoundingBox: &boundingBox,
 		Performer:   performer,
@@ -605,7 +622,7 @@ func (s *Service) createExistingIdentity(
 	// Find performer by subject name/alias
 	performerID, err := stash.FindPerformerBySubjectName(s.graphqlClient, matchedSubject)
 	if err != nil {
-		log.Warnf("Failed to find performer for subject '%s': %v", matchedSubject, err)
+		log.Warnf("Failed to find performer for subject '%s': %s", matchedSubject, utils.FlattenError(err))
 		return nil, err
 	}
 
@@ -615,6 +632,7 @@ func (s *Service) createExistingIdentity(
 		performer.ID = &performerIDStr
 		performer.Name = matchedSubject
 		identity := FaceIdentity{
+			Enhanced:    &result.Enhanced,
 			ImageID:     imageID,
 			BoundingBox: &boundingBox,
 			Performer:   performer,
@@ -657,7 +675,7 @@ func (s *Service) associateExistingPerformers(image stash.Image, performerIDs []
 		}
 		err := stash.UpdateImage(s.graphqlClient, graphql.ID(imageID), input)
 		if err != nil {
-			log.Warnf("Failed to update image performers: %v", err)
+			log.Warnf("Failed to update image performers: %s", utils.FlattenError(err))
 			return err
 		}
 		return nil
@@ -681,7 +699,7 @@ func (s *Service) updateImageStatuses(
 		stash.AddTagToImage(s.graphqlClient, graphql.ID(imageID), scannedTagID)
 	} else {
 		hasError = true
-		log.Warnf("Failed to add scanned tag to image %s: %v", imageID, err)
+		log.Warnf("Failed to add scanned tag to image %s: %s", imageID, utils.FlattenError(err))
 	}
 
 	// Add matched tag if performers were found
@@ -691,7 +709,7 @@ func (s *Service) updateImageStatuses(
 			stash.AddTagToImage(s.graphqlClient, graphql.ID(imageID), matchedTagID)
 		} else {
 			hasError = true
-			log.Warnf("Failed to add matched tag to image %s: %v", imageID, err)
+			log.Warnf("Failed to add matched tag to image %s: %s", imageID, utils.FlattenError(err))
 		}
 	}
 
@@ -700,7 +718,7 @@ func (s *Service) updateImageStatuses(
 	err = s.updateImageCompletionStatus(graphql.ID(imageID), facesDetected, facesMatched)
 	if err != nil {
 		hasError = true
-		log.Warnf("Failed to update completion status: %v", err)
+		log.Warnf("Failed to update completion status: %s", utils.FlattenError(err))
 	}
 
 	if hasError {
@@ -750,9 +768,15 @@ func (s *Service) identifyImageViaVision(
 
 	log.Infof("Image %s: Found %d face(s) via Vision Service", imageID, facesDetected)
 
+	image, err := stash.GetImage(s.graphqlClient, graphql.ID(imageID))
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get image from stash: %w", err)
+	}
+
 	// Process each detected face
 	identities := &[]FaceIdentity{}
 	ctx := FaceProcessingContext{
+		Image:      image,
 		ImageBytes: imageBytes,
 		SourceID:   imageID,
 	}
@@ -764,7 +788,7 @@ func (s *Service) identifyImageViaVision(
 			visionClient, ctx, face, results.Faces.Metadata, createPerformer)
 
 		if err != nil {
-			log.Warnf("Failed to process face %s: %v", face.FaceID, err)
+			log.Warnf("Failed to process face %s: %s", face.FaceID, utils.FlattenError(err))
 			continue
 		}
 
@@ -778,22 +802,28 @@ func (s *Service) identifyImageViaVision(
 }
 
 // identifyGallery processes all images in a gallery
-func (s *Service) identifyGallery(galleryID string, createPerformer bool, limit int) error {
+func (s *Service) identifyGallery(galleryID string, createPerformer bool, associateExisting bool, limit int) (*map[string]interface{}, error) {
 	if s.stopping {
-		return fmt.Errorf("operation cancelled")
+		return nil, fmt.Errorf("operation cancelled")
 	}
 
-	log.Infof("Starting gallery identification: %s (createPerformer=%v, limit=%d)", galleryID, createPerformer, limit)
+	log.Infof(
+		"Starting gallery identification: %s (createPerformer=%v, associateExisting=%v, limit=%d)",
+		galleryID,
+		createPerformer,
+		associateExisting,
+		limit,
+	)
 
 	// Step 1: Get gallery info first
 	gallery, err := stash.GetGallery(s.graphqlClient, graphql.ID(galleryID))
 	if err != nil {
-		return fmt.Errorf("failed to get gallery: %w", err)
+		return nil, fmt.Errorf("failed to get gallery: %w", err)
 	}
 
 	if gallery.ImageCount == 0 {
 		log.Infof("Gallery %s has no images", galleryID)
-		return nil
+		return nil, nil
 	}
 
 	page := 1
@@ -815,23 +845,24 @@ func (s *Service) identifyGallery(galleryID string, createPerformer bool, limit 
 	}
 	images, _, err := stash.FindImages(s.graphqlClient, filter, page, totalImages)
 	if err != nil {
-		return fmt.Errorf("failed to query gallery images: %w", err)
+		return nil, fmt.Errorf("failed to query gallery images: %w", err)
 	}
 
 	if len(images) == 0 {
 		log.Infof("Gallery %s has no images to process", galleryID)
-		return nil
+		return nil, nil
 	}
 
 	log.Infof("Processing %d images from gallery '%s'", len(images), gallery.Title)
 
 	// Step 3: Process each image in the gallery
+	results := map[string]interface{}{}
 	successCount := 0
 	failureCount := 0
 
 	for i, image := range images {
 		if s.stopping {
-			return fmt.Errorf("operation cancelled")
+			return nil, fmt.Errorf("operation cancelled")
 		}
 
 		progress := float64(i+1) / float64(len(images))
@@ -840,11 +871,13 @@ func (s *Service) identifyGallery(galleryID string, createPerformer bool, limit 
 		log.Infof("Processing image %d/%d: %s", i+1, len(images), image.ID)
 
 		// Batch processing always associates performers
-		_, err := s.identifyImage(string(image.ID), createPerformer, true, nil)
+		identities, err := s.identifyImage(string(image.ID), createPerformer, associateExisting, nil)
 		if err != nil {
-			log.Warnf("Failed to identify image %s: %v", image.ID, err)
+			log.Warnf("Failed to identify image %s: %s", image.ID, utils.FlattenError(err))
+			results[string(image.ID)] = nil
 			failureCount++
 		} else {
+			results[string(image.ID)] = *identities
 			successCount++
 		}
 	}
@@ -852,7 +885,7 @@ func (s *Service) identifyGallery(galleryID string, createPerformer bool, limit 
 	log.Progress(1.0)
 	log.Infof("Gallery identification complete: %d succeeded, %d failed", successCount, failureCount)
 
-	return nil
+	return &results, nil
 }
 
 // identifyImages performs batch identification of images
@@ -944,7 +977,7 @@ func (s *Service) identifyImages(newOnly bool, limit int) error {
 			// Batch processing always associates performers
 			_, err := s.identifyImage(string(image.ID), false, true, nil)
 			if err != nil {
-				log.Warnf("Failed to identify image %s: %v", image.ID, err)
+				log.Warnf("Failed to identify image %s: %s", image.ID, utils.FlattenError(err))
 				failureCount++
 			} else {
 				successCount++
@@ -1038,7 +1071,7 @@ func (s *Service) resetUnmatchedImages(limit int) error {
 
 		err := stash.RemoveTagFromImage(s.graphqlClient, imageID, scannedTagID)
 		if err != nil {
-			log.Warnf("Failed to remove tag from image %s: %v", imageID, err)
+			log.Warnf("Failed to remove tag from image %s: %s", imageID, utils.FlattenError(err))
 			continue
 		}
 
@@ -1194,4 +1227,63 @@ func (s *Service) cropFaceBytes(imageBytes []byte, box compreface.BoundingBox, p
 	}
 
 	return buf.Bytes(), nil
+}
+
+// downloadEnhancedImage retrieves an enhanced image for a face from Vision Service.
+func (s *Service) downloadEnhancedImage(imageID string, imagePath string, faceIndex *int) ([]byte, error) {
+	// Create temporary vision client
+	visionClient := s.createVisionClient()
+
+	if visionClient == nil {
+		log.Warnf("Enhanced image requested but Vision Service is not available for face %d", faceIndex)
+		return nil, fmt.Errorf("vision service not available for enhanced image for face %d", faceIndex)
+	}
+
+	if faceIndex == nil {
+		// Generate random face index
+		rand.Seed(time.Now().UnixNano())
+		randomIndex := rand.Intn(99999) // Large range to avoid collisions
+		faceIndex = &randomIndex
+	}
+
+	imageTimestamp := -0.06                                   // Use slight negative timestamp to get frame before detection
+	request := s.BuildImageAnalyzeRequest(imagePath, imageID) // Build request to get enhancement parameters
+	enhancement := request.Modules.Faces.Parameters.Enhancement
+	enhancedFrame, err := visionClient.ExtractFrame(imagePath, imageTimestamp, enhancement)
+	if err != nil {
+		log.Warnf("Failed to extract enhanced frame for face %d: %s", faceIndex, utils.FlattenError(err))
+		return nil, err
+	}
+
+	return enhancedFrame, nil
+}
+
+// saveEnhanceImage saves enhanced image bytes to a temporary file and returns the file path.
+func (s *Service) saveEnhanceImage(imageBytes []byte, imageID string, faceIndex *int) (string, error) {
+	if faceIndex == nil {
+		// Generate random face index
+		rand.Seed(time.Now().UnixNano())
+		randomIndex := rand.Intn(99999) // Large range to avoid collisions
+		faceIndex = &randomIndex
+	}
+
+	// Save enhanced image to temporary file
+	tempFile, err := os.CreateTemp("", fmt.Sprintf("enhanced_face_%s_%d_*.jpg", imageID, faceIndex))
+	if err != nil {
+		log.Warnf("Failed to create temp file for enhanced image for face %d: %s", faceIndex, utils.FlattenError(err))
+		return "", err
+	}
+	defer tempFile.Close()
+
+	_, err = tempFile.Write(imageBytes)
+	if err != nil {
+		log.Warnf("Failed to write enhanced image to temp file for face %d: %s", faceIndex, utils.FlattenError(err))
+		return "", err
+	}
+
+	// Update imagePath to point to enhanced image
+	imagePath := tempFile.Name()
+	log.Debugf("Downloading enhanced image for face %d to: %s", faceIndex, imagePath)
+
+	return imagePath, nil
 }

@@ -27,7 +27,7 @@ type VTTCue struct {
 }
 
 // ParseVTT parses a WebVTT file and returns sprite cues
-func ParseVTT(vttContent string) ([]VTTCue, error) {
+func ParseVTT(vttContent string, isEnhanced bool) ([]VTTCue, error) {
 	var cues []VTTCue
 	scanner := bufio.NewScanner(strings.NewReader(vttContent))
 
@@ -72,6 +72,14 @@ func ParseVTT(vttContent string) ([]VTTCue, error) {
 				y, _ := strconv.Atoi(xywhMatch[2])
 				w, _ := strconv.Atoi(xywhMatch[3])
 				h, _ := strconv.Atoi(xywhMatch[4])
+
+				if isEnhanced {
+					// Adjust coordinates for enhanced sprites (assuming 2x scaling)
+					x *= 2
+					y *= 2
+					w *= 2
+					h *= 2
+				}
 
 				cues = append(cues, VTTCue{
 					StartTime: currentStartTime,
@@ -159,14 +167,14 @@ func ExtractThumbnailFromSprite(spriteImg image.Image, cue VTTCue) ([]byte, erro
 }
 
 // ExtractFromSprite fetches sprite VTT and image, finds the thumbnail for timestamp, and returns it as bytes
-func ExtractFromSprite(spriteURL, vttURL string, timestamp float64) ([]byte, error) {
+func ExtractFromSprite(spriteURL, vttURL string, timestamp float64, isEnhanced bool) ([]byte, error) {
 	// Fetch and parse VTT
 	vttContent, err := FetchVTT(vttURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch VTT: %w", err)
 	}
 
-	cues, err := ParseVTT(vttContent)
+	cues, err := ParseVTT(vttContent, isEnhanced)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse VTT: %w", err)
 	}
