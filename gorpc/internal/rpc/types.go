@@ -30,6 +30,7 @@ type PerformerData struct {
 type FaceIdentity struct {
 	ImageID     string                  `json:"image_id"`
 	BoundingBox *compreface.BoundingBox `json:"bounding_box,omitempty"`
+	Enhanced    *bool                   `json:"enhanced,omitempty"`
 	Performer   PerformerData           `json:"performer"`
 	Confidence  *float64                `json:"confidence"`
 }
@@ -37,6 +38,11 @@ type FaceIdentity struct {
 // Response envelope for IdentifyImage RPC
 type IdentifyImageResponse struct {
 	Result *[]FaceIdentity `json:"result"`
+}
+
+// Response envelope for IdentifyGallery RPC
+type IdentifyGalleryResponse struct {
+	Result *map[string]interface{} `json:"result"`
 }
 
 // FaceQualityResult contains quality assessment outcome for CompreFace compatibility
@@ -54,6 +60,7 @@ type FaceQualityResult struct {
 // Either Scene or ImageBytes must be provided.
 type FaceProcessingContext struct {
 	Scene      *stash.Scene // For scene processing (video/sprite extraction)
+	Image      *stash.Image // For image processing (image metadata)
 	ImageBytes []byte       // For image processing (pre-loaded image data)
 	SourceID   string       // ID of the source (image ID or scene ID)
 }

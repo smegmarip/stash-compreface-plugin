@@ -165,6 +165,7 @@ func (s *Service) Run(input common.PluginInput, output *common.PluginOutput) err
 	case "identifyGallery":
 		// Parse galleryId (Stash sends integers as float64 in JSON)
 		galleryID := ""
+		var _res *map[string]interface{}
 		if galleryVal, ok := argsMap["galleryId"]; ok {
 			switch v := galleryVal.(type) {
 			case float64:
@@ -176,8 +177,20 @@ func (s *Service) Run(input common.PluginInput, output *common.PluginOutput) err
 			}
 		}
 		createPerformer := input.Args.Bool("createPerformer")
-		log.Infof("Identifying gallery: %s (createPerformer=%v, limit=%d)", galleryID, createPerformer, limit)
-		err = s.identifyGallery(galleryID, createPerformer, limit)
+		associateExisting := input.Args.Bool("associateExisting")
+		log.Infof(
+			"Identifying gallery: %s (createPerformer=%v, associateExisting=%v, limit=%d)",
+			galleryID,
+			createPerformer,
+			associateExisting,
+			limit,
+		)
+		_res, err = s.identifyGallery(galleryID, createPerformer, associateExisting, limit)
+		response := IdentifyGalleryResponse{Result: _res}
+		res, _err := json.Marshal(response)
+		if _err == nil {
+			log.Infof("identifyGallery=%s", string(res))
+		}
 		outputStr = "Gallery identification completed"
 
 	case "resetUnmatchedScenes":

@@ -118,6 +118,7 @@ tasks:
       mode: identifyGallery
       galleryId: null
       createPerformer: false
+      associateExisting: true
       limit: 0
 
   - name: Reset Unmatched Images
