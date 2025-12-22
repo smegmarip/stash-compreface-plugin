@@ -9,6 +9,7 @@ import (
 
 	"github.com/smegmarip/stash-compreface-plugin/internal/stash"
 	"github.com/smegmarip/stash-compreface-plugin/internal/vision"
+	"github.com/smegmarip/stash-compreface-plugin/pkg/utils"
 )
 
 // recognizeScenes performs face recognition on scenes using Vision Service
@@ -106,7 +107,7 @@ func (s *Service) recognizeScenes(useSprites bool, scanPartial bool, limit int) 
 
 			err := s.processScene(visionClient, scene, scannedTagID, matchedTagID, useSprites)
 			if err != nil {
-				log.Warnf("Failed to process scene %s: %v", scene.ID, err)
+				log.Warnf("Failed to process scene %s: %s", scene.ID, utils.FlattenError(err))
 				continue
 			}
 		}
@@ -131,7 +132,7 @@ func (s *Service) recognizeScenes(useSprites bool, scanPartial bool, limit int) 
 
 	// Trigger metadata scan
 	if err := stash.TriggerMetadataScan(s.graphqlClient); err != nil {
-		log.Warnf("Failed to trigger metadata scan: %v", err)
+		log.Warnf("Failed to trigger metadata scan: %s", utils.FlattenError(err))
 	}
 
 	return nil
@@ -207,7 +208,7 @@ func (s *Service) processScene(visionClient *vision.VisionServiceClient, scene s
 		log.Infof("Scene %s: No faces detected", scene.ID)
 		// Add scanned tag
 		if err := addTagToScene(s.graphqlClient, scene.ID, scannedTagID); err != nil {
-			log.Warnf("Failed to add scanned tag to scene %s: %v", scene.ID, err)
+			log.Warnf("Failed to add scanned tag to scene %s: %s", scene.ID, utils.FlattenError(err))
 		}
 		return nil
 	}
@@ -236,7 +237,7 @@ func (s *Service) processScene(visionClient *vision.VisionServiceClient, scene s
 		}
 		performerID, err := s.processFace(visionClient, ctx, face, requestMetadata)
 		if err != nil {
-			log.Warnf("Failed to process face %s: %v", face.FaceID, err)
+			log.Warnf("Failed to process face %s: %s", face.FaceID, utils.FlattenError(err))
 			continue
 		}
 		if performerID != "" {
@@ -249,23 +250,23 @@ func (s *Service) processScene(visionClient *vision.VisionServiceClient, scene s
 	if len(matchedPerformers) > 0 {
 		log.Infof("Scene %s: Matched/created %d performers", scene.ID, len(matchedPerformers))
 		if err := updateScenePerformers(s.graphqlClient, scene.ID, matchedPerformers); err != nil {
-			log.Warnf("Failed to update scene performers: %v", err)
+			log.Warnf("Failed to update scene performers: %s", utils.FlattenError(err))
 		}
 
 		// Add matched tag
 		if err := addTagToScene(s.graphqlClient, scene.ID, matchedTagID); err != nil {
-			log.Warnf("Failed to add matched tag: %v", err)
+			log.Warnf("Failed to add matched tag: %s", utils.FlattenError(err))
 		}
 	}
 
 	// Add scanned tag
 	if err := addTagToScene(s.graphqlClient, scene.ID, scannedTagID); err != nil {
-		log.Warnf("Failed to add scanned tag: %v", err)
+		log.Warnf("Failed to add scanned tag: %s", utils.FlattenError(err))
 	}
 
 	// Apply partial/complete tagging logic
 	if err := s.applySceneCompletionTags(scene.ID, facesDetected, facesProcessed); err != nil {
-		log.Warnf("Failed to apply completion tags: %v", err)
+		log.Warnf("Failed to apply completion tags: %s", utils.FlattenError(err))
 	}
 
 	return nil
@@ -459,7 +460,7 @@ func (s *Service) resetUnmatchedScenes(limit int) error {
 
 		err := stash.RemoveTagFromScene(s.graphqlClient, sceneID, scannedTagID)
 		if err != nil {
-			log.Warnf("Failed to remove tag from scene %s: %v", sceneID, err)
+			log.Warnf("Failed to remove tag from scene %s: %s", sceneID, utils.FlattenError(err))
 			continue
 		}
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/smegmarip/stash-compreface-plugin/internal/compreface"
 	"github.com/smegmarip/stash-compreface-plugin/internal/stash"
+	"github.com/smegmarip/stash-compreface-plugin/pkg/utils"
 )
 
 // ============================================================================
@@ -122,7 +123,7 @@ func (s *Service) synchronizePerformers(limit int) error {
 
 			err := s.syncPerformer(performer, syncTagID)
 			if err != nil {
-				log.Warnf("Failed to sync performer %s: %v", performer.ID, err)
+				log.Warnf("Failed to sync performer %s: %s", performer.ID, utils.FlattenError(err))
 				// Continue with next performer
 				continue
 			}
@@ -190,7 +191,7 @@ func (s *Service) syncPerformer(performer stash.Performer, syncTagID graphql.ID)
 	log.Debugf("Downloading performer image from %s", imageURL)
 	imageBytes, err := stash.DownloadImage(imageURL, s.serverConnection.SessionCookie)
 	if err != nil {
-		log.Warnf("Failed to download performer %s image: %v", performer.Name, err)
+		log.Warnf("Failed to download performer %s image: %s", performer.Name, utils.FlattenError(err))
 		return stash.AddTagToPerformer(s.graphqlClient, performer.ID, syncTagID)
 	}
 

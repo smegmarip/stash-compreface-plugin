@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"strings"
+
 	graphql "github.com/hasura/go-graphql-client"
 
 	"github.com/smegmarip/stash-compreface-plugin/internal/compreface"
@@ -52,4 +54,11 @@ func Min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func FlattenError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return strings.Join(strings.Fields(err.Error()), " ")
 }

@@ -18,6 +18,7 @@ import (
 
 	"github.com/rwcarlsen/goexif/exif"
 	"github.com/stashapp/stash/pkg/plugin/common/log"
+	"github.com/smegmarip/stash-compreface-plugin/pkg/utils"
 )
 
 // NormalizeHost normalizes localhost IP addresses in the given URL to the configured Stash host URL.
@@ -27,7 +28,7 @@ func (s *Service) NormalizeHost(urlStr string) string {
 	config := s.config
 	u, err := url.Parse(urlStr)
 	if err != nil {
-		log.Warnf("Failed to parse URL %s: %v", urlStr, err)
+		log.Warnf("Failed to parse URL %s: %s", urlStr, utils.FlattenError(err))
 		return urlStr
 	}
 	log.Debugf("Parsed URL host: %s", u.Host)
@@ -71,7 +72,7 @@ func NormalizeImageOrientation(imageBytes []byte) ([]byte, error) {
 
 	orientation, err := orientationTag.Int(0)
 	if err != nil {
-		log.Warnf("Failed to parse EXIF orientation value: %v", err)
+		log.Warnf("Failed to parse EXIF orientation value: %s", utils.FlattenError(err))
 		return imageBytes, nil
 	}
 
@@ -86,7 +87,7 @@ func NormalizeImageOrientation(imageBytes []byte) ([]byte, error) {
 	// Decode image
 	img, format, err := image.Decode(bytes.NewReader(imageBytes))
 	if err != nil {
-		log.Warnf("Failed to decode image for EXIF normalization: %v", err)
+		log.Warnf("Failed to decode image for EXIF normalization: %s", utils.FlattenError(err))
 		return imageBytes, nil
 	}
 
@@ -98,7 +99,7 @@ func NormalizeImageOrientation(imageBytes []byte) ([]byte, error) {
 	// Re-encode as JPEG (quality 95) without any EXIF/XMP metadata
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, transformedImg, &jpeg.Options{Quality: 95}); err != nil {
-		log.Warnf("Failed to re-encode image after EXIF normalization: %v", err)
+		log.Warnf("Failed to re-encode image after EXIF normalization: %s", utils.FlattenError(err))
 		return imageBytes, nil
 	}
 
@@ -223,7 +224,7 @@ func saveImageBytesToFile(imageBytes []byte, filePath string) error {
 	// Save cropped face for debugging
 	err := os.WriteFile(filePath, imageBytes, 0644)
 	if err != nil {
-		log.Warnf("Failed to save debug cropped face to %s: %v", filePath, err)
+		log.Warnf("Failed to save debug cropped face to %s: %s", filePath, utils.FlattenError(err))
 		return err
 	} else {
 		log.Debugf("Saved debug cropped face to %s", filePath)

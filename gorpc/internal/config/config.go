@@ -12,6 +12,8 @@ import (
 
 	"github.com/stashapp/stash/pkg/plugin/common"
 	"github.com/stashapp/stash/pkg/plugin/common/log"
+
+	"github.com/smegmarip/stash-compreface-plugin/pkg/utils"
 )
 
 // Load loads and validates plugin configuration from Stash settings
@@ -37,7 +39,7 @@ func Load(input common.PluginInput) (*PluginConfig, error) {
 	// Fetch plugin configuration from Stash
 	pluginConfig, err := getPluginConfiguration(input.ServerConnection)
 	if err != nil {
-		log.Warnf("Failed to get plugin configuration: %v, using defaults", err)
+		log.Warnf("Failed to get plugin configuration: %s, using defaults", utils.FlattenError(err))
 		// Don't fail - use defaults
 	} else {
 		// Override defaults with user settings
@@ -327,7 +329,7 @@ func resolveServiceURL(configuredURL string, defaultContainerName string, defaul
 	// Parse the URL
 	parsedURL, err := url.Parse(configuredURL)
 	if err != nil {
-		log.Warnf("Failed to parse service URL '%s': %v, using fallback", configuredURL, err)
+		log.Warnf("Failed to parse service URL '%s': %s, using fallback", configuredURL, utils.FlattenError(err))
 		return hardcodedFallback
 	}
 
@@ -370,7 +372,7 @@ func resolveServiceURL(configuredURL string, defaultContainerName string, defaul
 	log.Infof("Resolving hostname via DNS: %s", hostname)
 	addrs, err := net.LookupIP(hostname)
 	if err != nil {
-		log.Warnf("DNS lookup failed for '%s': %v, using hostname as-is", hostname, err)
+		log.Warnf("DNS lookup failed for '%s': %s, using hostname as-is", hostname, utils.FlattenError(err))
 		// Return original URL even if DNS fails - it might still work
 		resolvedURL := fmt.Sprintf("%s://%s:%s", scheme, hostname, port)
 		return resolvedURL
