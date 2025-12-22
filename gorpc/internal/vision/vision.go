@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/stashapp/stash/pkg/plugin/common/log"
+
+	"github.com/smegmarip/stash-compreface-plugin/pkg/utils"
 )
 
 // ============================================================================
@@ -233,7 +235,7 @@ func IsVisionServiceAvailable(baseURL string, frameServerURL string) bool {
 	client := NewVisionServiceClient(baseURL, frameServerURL)
 	err := client.HealthCheck()
 	if err != nil {
-		log.Warnf("Vision Service not available at %s: %v", baseURL, err)
+		log.Warnf("Vision Service not available at %s: %s", baseURL, utils.FlattenError(err))
 		return false
 	}
 
@@ -248,21 +250,11 @@ func (c *VisionServiceClient) ExtractFrame(videoPath string, timestamp float64, 
 	if enhancement != nil && enhancement.Enabled {
 		useEnhanced = true
 	}
-	baseUrl := fmt.Sprintf("%s/extract-frame", c.FrameServerURL)
-	params := url.Values{}
-	params.Add("video_path", videoPath)
-	params.Add("timestamp", fmt.Sprintf("%.2f", timestamp))
-	params.Add("output_format", "jpeg")
-	params.Add("quality", "95")
 	frameType := ""
 	if useEnhanced {
-		// Use enhanced frame extraction
-		params.Add("enhance", "1")
-		params.Add("model", enhancement.Model)
-		params.Add("fidelity_weight", fmt.Sprintf("%.2f", enhancement.FidelityWeight))
 		frameType = " enhanced"
 	}
-	url := fmt.Sprintf("%s?%s", baseUrl, params.Encode())
+	url := c.GetFrameURL(videoPath, timestamp, enhancement)
 	log.Debugf("Extracting%s frame from: %s ", frameType, url)
 
 	resp, err := c.HTTPClient.Get(url)
@@ -284,4 +276,25 @@ func (c *VisionServiceClient) ExtractFrame(videoPath string, timestamp float64, 
 
 	log.Tracef("Frame extracted: %d bytes", buf.Len())
 	return buf.Bytes(), nil
+}
+
+// GetFrameURL constructs the URL for extracting a frame at given timestamp
+func (c *VisionServiceClient) GetFrameURL(videoPath string, timestamp float64, enhancement *EnhancementParameters) string {
+	useEnhanced := false
+	if enhancement != nil && enhancement.Enabled {
+		useEnhanced = true
+	}
+	baseUrl := fmt.Sprintf("%s/frames/extract-frame", c.FrameServerURL)
+	params := url.Values{}
+	params.Add("video_path", videoPath)
+	params.Add("timestamp", fmt.Sprintf("%.2f", timestamp))
+	params.Add("output_format", "jpeg")
+	params.Add("quality", "95")
+	if useEnhanced {
+		// Use enhanced frame extraction
+		params.Add("enhance", "1")
+		params.Add("model", enhancement.Model)
+		params.Add("fidelity_weight", fmt.Sprintf("%.2f", enhancement.FidelityWeight))
+	}
+	return fmt.Sprintf("%s?%s", baseUrl, params.Encode())
 }
