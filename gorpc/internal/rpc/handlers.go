@@ -68,6 +68,23 @@ func (s *Service) Run(input common.PluginInput, output *common.PluginOutput) err
 		err = s.synchronizePerformers(limit)
 		outputStr = "Performer synchronization completed"
 
+	case "synchronizePerformer":
+		// Parse performerId (Stash sends integers as float64 in JSON)
+		performerID := ""
+		if performerVal, ok := argsMap["performerId"]; ok {
+			switch v := performerVal.(type) {
+			case float64:
+				performerID = fmt.Sprintf("%.0f", v)
+			case int:
+				performerID = fmt.Sprintf("%d", v)
+			case string:
+				performerID = v
+			}
+		}
+		log.Infof("Synchronizing performer: %s", performerID)
+		err = s.synchronizePerformer(performerID)
+		outputStr = "Performer synchronization completed"
+
 	case "recognizeImages":
 		log.Infof("Starting image recognition (limit=%d)", limit)
 		err = s.recognizeImages(limit)

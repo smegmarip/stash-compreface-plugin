@@ -146,6 +146,42 @@ func (s *Service) synchronizePerformers(limit int) error {
 	return nil
 }
 
+// synchronizePerformer syncs one performer by ID with Compreface.
+// It creates a "Person {id} {random}" subject from the performer image and
+// saves the subject name as a performer alias.
+func (s *Service) synchronizePerformer(performerID string) error {
+	if performerID == "" {
+		return fmt.Errorf("performerId is required")
+	}
+
+	log.Infof("Starting synchronization for performer %s", performerID)
+
+	syncTagID, err := stash.GetOrCreateTag(s.graphqlClient, s.tagCache, s.config.SyncedTagName, "Compreface Synced")
+	if err != nil {
+		return fmt.Errorf("failed to get sync tag: %w", err)
+	}
+
+	performer, err := stash.GetPerformerByID(s.graphqlClient, graphql.ID(performerID))
+	if err != nil {
+		return fmt.Errorf("failed to get performer %s: %w", performerID, err)
+	}
+	if performer == nil || performer.ID == "" {
+		return fmt.Errorf("performer %s not found", performerID)
+	}
+
+	// Performers without an image are not eligible for subject creation
+	if performer.ImagePath == "" || strings.Contains(performer.ImagePath, "default=true") {
+		return fmt.Errorf("performer %s (%s) has no image, not eligible for subject creation", performerID, performer.Name)
+	}
+
+	if err := s.syncPerformer(*performer, syncTagID); err != nil {
+		return fmt.Errorf("failed to sync performer %s: %w", performerID, err)
+	}
+
+	log.Infof("Performer %s synchronized", performerID)
+	return nil
+}
+
 // syncPerformer syncs a single performer with Compreface
 func (s *Service) syncPerformer(performer stash.Performer, syncTagID graphql.ID) error {
 	// Step 1: Find or create the "Person ..." alias

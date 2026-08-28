@@ -79,6 +79,12 @@ tasks:
       mode: synchronizePerformers
       limit: 0
 
+  - name: Synchronize Performer
+    description: Synchronize a single performer with Compreface by performer ID
+    defaultArgs:
+      mode: synchronizePerformer
+      performerId: null
+
   - name: Recognize Images
     description: Detect and group faces in images using Vision Service
     defaultArgs:
