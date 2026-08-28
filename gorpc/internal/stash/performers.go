@@ -146,7 +146,7 @@ func UpdatePerformer(client *graphql.Client, performerID graphql.ID, input Perfo
 	ctx := context.Background()
 
 	var mutation struct {
-		PerformerUpdate PerformerUpdateInput `graphql:"performerUpdate(input: $input)"`
+		PerformerUpdate PerformerUpdate `graphql:"performerUpdate(input: $input)"`
 	}
 
 	variables := map[string]interface{}{

@@ -207,6 +207,11 @@ type PerformerCreate struct {
 	ID graphql.ID `graphql:"id"`
 }
 
+// PerformerUpdate represents the result of updating a performer
+type PerformerUpdate struct {
+	ID graphql.ID `graphql:"id"`
+}
+
 // ImageCreate represents the result of creating an image
 type ImageCreate struct {
 	ID graphql.ID `graphql:"id"`
